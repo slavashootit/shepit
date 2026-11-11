@@ -253,6 +253,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         histItem.target = self
         menu.addItem(histItem)
 
+        // Recent pastes submenu
+        let recentItems = app.recentPastes
+        if !recentItems.isEmpty {
+            let recentSub = NSMenu()
+            for item in recentItems {
+                let preview = item.text.prefix(60) + (item.text.count > 60 ? "…" : "")
+                let mi = NSMenuItem(title: String(preview), action: #selector(menuCopyRecentItem(_:)), keyEquivalent: "")
+                mi.target = self
+                mi.representedObject = item.text
+                recentSub.addItem(mi)
+            }
+            let recentParent = NSMenuItem(title: "Останні репліки", action: nil, keyEquivalent: "")
+            recentParent.submenu = recentSub
+            menu.addItem(recentParent)
+        }
+
         let setItem = NSMenuItem(title: "Налаштування…", action: #selector(menuOpenSettings), keyEquivalent: ",")
         setItem.target = self
         menu.addItem(setItem)
@@ -417,6 +433,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let uid = sender.representedObject as? String {
             AppState.shared.settings.selectedMicUID = uid
             rebuildStatusMenu()
+        }
+    }
+
+    @objc private func menuCopyRecentItem(_ sender: NSMenuItem) {
+        if let text = sender.representedObject as? String {
+            TextInserter.copyToClipboard(text)
         }
     }
 }

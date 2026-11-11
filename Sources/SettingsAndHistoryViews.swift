@@ -173,6 +173,47 @@ struct ConfigurationSectionView: View {
                         }
                     }
                 }
+                // Dictation & AI enhancements
+                VStack(alignment: .leading, spacing: 10) {
+                    sectionHeader("Диктування та ШІ")
+                    SectionCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Toggle(isOn: $app.settings.enableVoiceCommands) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Голосові команди під час диктування")
+                                        .font(.system(size: 13.5, weight: .medium))
+                                    Text("«Новий рядок», «крапка», «скасуй це», «в лапках …» — виконуються на льоту")
+                                        .font(.system(size: 11.5))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
+                            Divider().opacity(0.25)
+
+                            Toggle(isOn: $app.settings.enableSmartFormatting) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Розумне форматування чисел і валют")
+                                        .font(.system(size: 13.5, weight: .medium))
+                                    Text("«25 тисяч гривень» → 25 000 ₴, «3 відсотки» → 3% тощо")
+                                        .font(.system(size: 11.5))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
+                            Divider().opacity(0.25)
+
+                            Toggle(isOn: $app.settings.contextAwareness) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Зчитувати контекст активного вікна")
+                                        .font(.system(size: 13.5, weight: .medium))
+                                    Text("ШІ-режими враховують виділений текст і назву застосунку для точніших результатів")
+                                        .font(.system(size: 11.5))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
             }
             .padding(22)
         }
@@ -207,6 +248,17 @@ struct ConfigurationSectionView: View {
                         HStack(spacing: 2) {
                             ForEach([0.4, 0.9, 0.6, 0.8, 0.4], id: \.self) { h in
                                 Capsule().fill(Color.white.opacity(0.85)).frame(width: 2, height: CGFloat(h * 12))
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                    case .notch:
+                        // Notch-style preview: centered pill with bars and glow dot
+                        HStack(spacing: 2) {
+                            Circle().fill(Color(red: 0.24, green: 0.86, blue: 0.66)).frame(width: 4, height: 4)
+                            ForEach([0.5, 0.8, 0.5], id: \.self) { h in
+                                Capsule().fill(Color.white.opacity(0.85)).frame(width: 2, height: CGFloat(h * 10))
                             }
                         }
                         .padding(.horizontal, 8)
@@ -745,6 +797,20 @@ struct HistorySectionView: View {
                     Label("Розпізнати файл…", systemImage: "doc.badge.plus")
                 }
                 .buttonStyle(.bordered)
+
+                Spacer()
+
+                if !app.historyItems.isEmpty {
+                    Menu {
+                        Button("Markdown (.md)") { _ = app.exportHistory(format: "md") }
+                        Button("Текст (.txt)") { _ = app.exportHistory(format: "txt") }
+                        Button("Субтитри (.srt)") { _ = app.exportHistory(format: "srt") }
+                    } label: {
+                        Label("Експорт", systemImage: "square.and.arrow.up")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 100)
+                }
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 12)

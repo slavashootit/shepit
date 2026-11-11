@@ -87,6 +87,7 @@ final class TranscriptionEngine {
         mode: ShepitMode,
         settings: ShepitSettings,
         forceEngine: EngineChoice? = nil,
+        context: [String: Any]? = nil,
         isFile: Bool = false,
         completion: @escaping (Result<TranscriptionResponse, Error>) -> Void
     ) {
@@ -99,7 +100,7 @@ final class TranscriptionEngine {
                 .map { ["from": $0.from, "to": $0.to] }
 
             let chosenEngine = forceEngine ?? mode.engine
-            let payload: [String: Any] = [
+            var payload: [String: Any] = [
                 "cmd": "transcribe",
                 "audio_path": audioURL.path,
                 "engine": chosenEngine.rawValue,
@@ -112,8 +113,13 @@ final class TranscriptionEngine {
                 "llm_mode": mode.llmMode,
                 "custom_prompt": mode.customPrompt,
                 "autocapitalize": mode.autocapitalize,
+                "enable_voice_commands": settings.enableVoiceCommands,
+                "enable_smart_formatting": settings.enableSmartFormatting,
                 "is_file": isFile
             ]
+            if let context, !context.isEmpty {
+                payload["context"] = context
+            }
 
             let timeoutSec = isFile ? 240.0 : 22.0
             self.sendRawCommand(payload, timeout: timeoutSec) { [weak self] result in

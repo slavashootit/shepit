@@ -404,7 +404,63 @@ def call_groq_whisper(
     return None
 
 
-def apply_llm_postprocess(text: str, llm_mode: str, custom_prompt: str = "") -> tuple[str, bool]:
+def apply_voice_commands_and_smart_formatting(
+    text: str, enable_commands: bool = True, enable_smart_formatting: bool = True
+) -> str:
+    clean = text.strip()
+    if not clean:
+        return ""
+
+    # 1. Voice undo / cancel command
+    if re.search(r"\b(скасуй це|видали це|відміни це)\s*$", clean, re.IGNORECASE):
+        if re.fullmatch(r"\s*(скасуй це|видали це|відміни це)[.!?]?\s*", clean, re.IGNORECASE):
+            return ""
+        clean = re.sub(r"[,;]?\s*(скасуй це|видали це|відміни це)[.!?]?\s*$", "", clean, flags=re.IGNORECASE)
+
+    res = clean
+
+    # 2. Voice formatting commands
+    if enable_commands:
+        # Paragraphs and line breaks
+        res = re.sub(r"(?i)\b(?:з нового рядка|новий рядок)\b", "\n", res)
+        res = re.sub(r"(?i)\b(?:з нового абзацу|новий абзац)\b", "\n\n", res)
+
+        # Punctuations
+        res = re.sub(r"(?i)\s*\bзнак оклику\b", "!", res)
+        res = re.sub(r"(?i)\s*\bзнак питання\b", "?", res)
+        res = re.sub(r"(?i)\s*\bтри крапки\b", "…", res)
+        res = re.sub(r"(?i)\s*\bдвокрапка\b", ":", res)
+        res = re.sub(r"(?i)\s*\bкрапка з комою\b", ";", res)
+        res = re.sub(r"(?i)\s*\b(?:смайлик|смайл)\b", " :)", res)
+        res = re.sub(r"(?i)\s*\bсердечко\b", " ❤️", res)
+
+        # Quotes
+        res = re.sub(r"(?i)\bв лапках\s+([^\n,.]+)", r"«\1»", res)
+        res = re.sub(r"(?i)\bвідкрий лапки\s*(.*?)\s*закрий лапки\b", r"«\1»", res)
+
+        # Markdown tasks / bullets
+        res = re.sub(r"(?i)\b(?:новий пункт|наступний пункт)\b", "\n- ", res)
+        res = re.sub(r"(?i)\b(?:перший пункт|пункт перший)\b", "- ", res)
+
+    # 3. Smart numbers, currencies, dates
+    if enable_smart_formatting:
+        # "25 тисяч гривень" -> "25 000 ₴"
+        res = re.sub(r"(?i)\b(\d+)\s+тисяч(?:і|ь)?\s+гривень\b", r"\1 000 ₴", res)
+        res = re.sub(r"(?i)\b(\d+)\s+гривень\b", r"\1 ₴", res)
+        res = re.sub(r"(?i)\b(\d+)\s+доларів\b", r"$\1", res)
+        res = re.sub(r"(?i)\b(\d+)\s+євро\b", r"€\1", res)
+        res = re.sub(r"(?i)\b(\d+)\s+відсотків\b", r"\1%", res)
+
+    # Clean whitespace around newlines
+    res = re.sub(r"[ \t]+\n", "\n", res)
+    res = re.sub(r"\n[ \t]+", "\n", res)
+    res = re.sub(r"\n{3,}", "\n\n", res)
+    return res.strip()
+
+
+def apply_llm_postprocess(
+    text: str, llm_mode: str, custom_prompt: str = "", context: dict | None = None
+) -> tuple[str, bool]:
     if not llm_mode or not text.strip():
         return text, False
 
@@ -422,9 +478,20 @@ def apply_llm_postprocess(text: str, llm_mode: str, custom_prompt: str = "") -> 
             "Preserve technical terms, brand names, and tone. Return ONLY the translated text without quotes."
         )
     elif llm_mode == "custom" and custom_prompt.strip():
-        sys_prompt = custom_prompt.strip() + "\nПоверни ТІЛЬКИ готовий результат без вступних фраз."
+        sys_prompt = custom_prompt.strip() + "\nПоверни ТІЛЬКИ готовий результат без лапок і вступних слів."
     else:
         return text, False
+
+    if context:
+        ctx_parts = []
+        if context.get("app_name"):
+            ctx_parts.append(f"Активна програма: {context['app_name']}")
+        if context.get("selected_text"):
+            ctx_parts.append(f"Виділений текст, на який відповідає автор:\n«««\n{context['selected_text']}\n»»»")
+        elif context.get("surrounding_text"):
+            ctx_parts.append(f"Контекст перед курсором:\n«««\n{context['surrounding_text']}\n»»»")
+        if ctx_parts:
+            sys_prompt += "\n\nКонтекст вікна користувача для точної та узгодженої відповіді:\n" + "\n".join(ctx_parts)
 
     groq_key = read_key("groq", "GROQ_API_KEY")
     if groq_key:
@@ -627,6 +694,9 @@ class ParakeetWorker:
         custom_prompt = req.get("custom_prompt", "")
         autocapitalize = bool(req.get("autocapitalize", True))
         is_file = bool(req.get("is_file", False))
+        enable_commands = bool(req.get("enable_voice_commands", True))
+        enable_smart = bool(req.get("enable_smart_formatting", True))
+        context = req.get("context") or {}
 
         groq_key = read_key("groq", "GROQ_API_KEY")
         local_available = HAS_MLX and self.has_local_model_files()
@@ -654,7 +724,12 @@ class ParakeetWorker:
             )
             if not g_text:
                 raise RuntimeError("Groq не відповів — перевірте інтернет або встановіть офлайн-модель Parakeet v3.")
-            final_text, llm_applied = apply_llm_postprocess(g_text, llm_mode, custom_prompt)
+            processed = apply_voice_commands_and_smart_formatting(
+                g_text, enable_commands=enable_commands, enable_smart_formatting=enable_smart
+            )
+            final_text, llm_applied = apply_llm_postprocess(
+                processed, llm_mode, custom_prompt, context=context
+            )
             final_text = apply_replacements_and_format(final_text, replacements, autocapitalize)
             return {
                 "no_voice": False,
@@ -787,11 +862,13 @@ class ParakeetWorker:
                                 raw_text = " ".join(cur_words)
                                 engine_used = "Parakeet v3 + Groq"
 
-        final_text = raw_text
+        final_text = apply_voice_commands_and_smart_formatting(
+            raw_text, enable_commands=enable_commands, enable_smart_formatting=enable_smart
+        )
         llm_applied = False
         if llm_mode:
             final_text, llm_applied = apply_llm_postprocess(
-                final_text, llm_mode, custom_prompt
+                final_text, llm_mode, custom_prompt, context=context
             )
 
         final_text = apply_replacements_and_format(

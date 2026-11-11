@@ -146,12 +146,23 @@ final class FloatingHUDController {
     private func repositionPanel() {
         guard let panel else { return }
         let screen = NSScreen.main ?? NSScreen.screens.first
-        guard let visible = screen?.visibleFrame else { return }
-        let width: CGFloat = 460
-        let height: CGFloat = model.livePreviewText.isEmpty ? 76 : 124
-        let x = visible.midX - width / 2.0
-        let y = visible.minY + 26
-        panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        guard let screen else { return }
+        let visible = screen.visibleFrame
+        let full = screen.frame
+
+        if model.style == .notch {
+            let width: CGFloat = 340
+            let height: CGFloat = 48
+            let x = full.midX - width / 2.0
+            let y = full.maxY - height
+            panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        } else {
+            let width: CGFloat = 460
+            let height: CGFloat = model.livePreviewText.isEmpty ? 76 : 124
+            let x = visible.midX - width / 2.0
+            let y = visible.minY + 26
+            panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        }
     }
 }
 
@@ -188,6 +199,8 @@ struct FloatingHUDView: View {
             case .recording(let handsFree):
                 if vm.style == .mini {
                     miniRecordingPill(handsFree: handsFree)
+                } else if vm.style == .notch {
+                    notchRecordingPill(handsFree: handsFree)
                 } else {
                     classicRecordingPill(handsFree: handsFree)
                 }
@@ -295,6 +308,50 @@ struct FloatingHUDView: View {
         .padding(.vertical, 8)
         .background(capsuleBackground(borderTint: accent.opacity(0.35)))
         .onTapGesture { vm.onStopTap?() }
+    }
+
+    private func notchRecordingPill(handsFree: Bool) -> some View {
+        let accent = handsFree
+            ? Color(red: 1.0, green: 0.68, blue: 0.24)
+            : Color(red: 0.24, green: 0.88, blue: 0.68)
+
+        return HStack(spacing: 12) {
+            Circle()
+                .fill(accent)
+                .frame(width: 8, height: 8)
+                .shadow(color: accent.opacity(0.8), radius: 4)
+
+            WaveformBarsView(levels: Array(vm.levels.prefix(12)), tint: accent, barCount: 12, height: 18)
+                .frame(width: 68, height: 20)
+
+            Text(formatElapsed(vm.elapsedSeconds))
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundColor(.white.opacity(0.92))
+                .frame(minWidth: 36)
+
+            WaveformBarsView(levels: Array(vm.levels.suffix(12)), tint: accent, barCount: 12, height: 18)
+                .frame(width: 68, height: 20)
+
+            Button(action: { vm.onCancelTap?() }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white.opacity(0.6))
+                    .padding(4)
+            }
+            .buttonStyle(.plain)
+            .help("Скасувати запис (Esc)")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(red: 0.05, green: 0.06, blue: 0.08).opacity(0.96))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(accent.opacity(0.4), lineWidth: 1.2)
+                )
+                .shadow(color: Color.black.opacity(0.5), radius: 10, x: 0, y: 4)
+        )
     }
 
     private func capsuleBackground(borderTint: Color) -> some View {

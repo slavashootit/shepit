@@ -68,6 +68,7 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
 enum RecordingWindowStyle: String, Codable, CaseIterable, Identifiable {
     case classic
     case mini
+    case notch
     case none
 
     var id: String { rawValue }
@@ -76,6 +77,7 @@ enum RecordingWindowStyle: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .classic: return "Класичне"
         case .mini: return "Міні"
+        case .notch: return "Виріз (Notch)"
         case .none: return "Сховане"
         }
     }
@@ -326,6 +328,48 @@ struct ShepitMode: Codable, Identifiable, Equatable {
             autocapitalize: true,
             autoPaste: true,
             activationBundleIDs: []
+        ),
+        ShepitMode(
+            id: "business-email",
+            name: "Діловий тон",
+            subtitle: "Ввічливий, структурований лист чи відповідь клієнту",
+            icon: "briefcase.fill",
+            language: "auto",
+            engine: .hybrid,
+            realtimePreview: false,
+            llmMode: "custom",
+            customPrompt: "Перетвори розмовну думку на ввічливий, чіткий і структурований діловий лист або повідомлення клієнту чи партнеру. Без бюрократизму, природною живою мовою. Якщо передано контекст повідомлення співрозмовника, дай влучну відповідь по суті.",
+            autocapitalize: true,
+            autoPaste: true,
+            activationBundleIDs: []
+        ),
+        ShepitMode(
+            id: "git-commit",
+            name: "Git Commit",
+            subtitle: "Conventional Commit англійською для розробників",
+            icon: "terminal.fill",
+            language: "auto",
+            engine: .hybrid,
+            realtimePreview: false,
+            llmMode: "custom",
+            customPrompt: "Сформулюй лаконічне Conventional Commit повідомлення англійською мовою (наприклад: feat(hud): add notch integration, fix(audio): prevent engine stall). Тільки одне повідомлення комміту без лапок, пояснень і вступних слів.",
+            autocapitalize: false,
+            autoPaste: true,
+            activationBundleIDs: []
+        ),
+        ShepitMode(
+            id: "bullet-tasks",
+            name: "Список задач",
+            subtitle: "Структурований чек-лист дій у Markdown (- [ ])",
+            icon: "checklist",
+            language: "auto",
+            engine: .hybrid,
+            realtimePreview: false,
+            llmMode: "custom",
+            customPrompt: "Перетвори потік думок на структурований список завдань у форматі Markdown (- [ ] Завдання). Виділи конкретні дії, відповідальних і терміни, якщо вони названі.",
+            autocapitalize: true,
+            autoPaste: true,
+            activationBundleIDs: []
         )
     ]
 }
@@ -353,6 +397,10 @@ struct ShepitSettings: Codable, Equatable {
     var silenceRemoval: Bool = true
     var dynamicNormalization: Bool = true
     var playbackBehavior: PlaybackBehavior = .pause
+
+    var enableVoiceCommands: Bool = true
+    var enableSmartFormatting: Bool = true
+    var contextAwareness: Bool = true
 
     var soundEffectStyle: SoundEffectStyle = .classic
     var soundVolume: Double = 0.78

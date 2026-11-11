@@ -3,8 +3,64 @@ import AppKit
 import ApplicationServices
 
 enum TextInserter {
+    struct ActiveContext {
+        var selectedText: String = ""
+        var surroundingText: String = ""
+        var appName: String = ""
+        var appBundleID: String = ""
+    }
+
     static var isAccessibilityGranted: Bool {
         AXIsProcessTrusted()
+    }
+
+    static func captureActiveContext(targetApp: NSRunningApplication?) -> ActiveContext {
+        guard AXIsProcessTrusted() else {
+            return ActiveContext(
+                selectedText: "",
+                surroundingText: "",
+                appName: targetApp?.localizedName ?? "",
+                appBundleID: targetApp?.bundleIdentifier ?? ""
+            )
+        }
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedElementObj: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedElementObj)
+        guard err == .success, let focusedElement = focusedElementObj else {
+            return ActiveContext(
+                selectedText: "",
+                surroundingText: "",
+                appName: targetApp?.localizedName ?? "",
+                appBundleID: targetApp?.bundleIdentifier ?? ""
+            )
+        }
+        let elem = focusedElement as! AXUIElement
+        var selText = ""
+        var valText = ""
+
+        var selObj: CFTypeRef?
+        if AXUIElementCopyAttributeValue(elem, kAXSelectedTextAttribute as CFString, &selObj) == .success,
+           let str = selObj as? String {
+            selText = str.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        var valObj: CFTypeRef?
+        if AXUIElementCopyAttributeValue(elem, kAXValueAttribute as CFString, &valObj) == .success,
+           let str = valObj as? String {
+            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.count > 600 {
+                valText = String(trimmed.suffix(600))
+            } else {
+                valText = trimmed
+            }
+        }
+
+        return ActiveContext(
+            selectedText: selText,
+            surroundingText: valText,
+            appName: targetApp?.localizedName ?? "",
+            appBundleID: targetApp?.bundleIdentifier ?? ""
+        )
     }
 
     static func promptAccessibilityPermission() {

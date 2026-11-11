@@ -73,6 +73,7 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var activeRecordingURL: URL?
     private var targetAppAtStart: NSRunningApplication?
     private var activeSessionMode: ShepitMode?
+    private var activeSessionContext: [String: Any]?
     private var previewTimer: Timer?
     private var previewInFlight = false
     private var audioPlayer: AVAudioPlayer?
@@ -306,6 +307,18 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
         activeSessionMode = chosenMode
 
+        if settings.contextAwareness {
+            let ctx = TextInserter.captureActiveContext(targetApp: targetAppAtStart)
+            var dict: [String: Any] = [:]
+            if !ctx.selectedText.isEmpty { dict["selected_text"] = ctx.selectedText }
+            if !ctx.surroundingText.isEmpty { dict["surrounding_text"] = ctx.surroundingText }
+            if !ctx.appName.isEmpty { dict["app_name"] = ctx.appName }
+            if !ctx.appBundleID.isEmpty { dict["app_bundle"] = ctx.appBundleID }
+            activeSessionContext = dict.isEmpty ? nil : dict
+        } else {
+            activeSessionContext = nil
+        }
+
         MediaPlaybackController.shared.beginRecording(behavior: settings.playbackBehavior)
 
         do {
@@ -380,8 +393,9 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let capturedApp = targetAppAtStart
         let appName = capturedApp?.localizedName ?? ""
         let appBundle = capturedApp?.bundleIdentifier ?? ""
+        let capturedContext = activeSessionContext
 
-        engine.transcribe(audioURL: wavURL, mode: mode, settings: settings, isFile: false) { [weak self] result in
+        engine.transcribe(audioURL: wavURL, mode: mode, settings: settings, context: capturedContext, isFile: false) { [weak self] result in
             guard let self else { return }
             self.sessionPhase = .idle
             MediaPlaybackController.shared.endRecording(behavior: self.settings.playbackBehavior)
@@ -872,6 +886,94 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
             self.modelInstallProgress = 1.0
             self.modelInstallStage = ""
             self.statusBannerMessage = "Модель Parakeet v3 встановлено й завантажено в пам'ять!"
+        }
+    }
+
+    // MARK: - Quick Pastes & History Export
+
+    var recentPastes: [RecordingItem] {
+        Array(historyItems.filter { !$0.noVoice && !$0.text.isEmpty }.prefix(5))
+    }
+
+    func copyRecentItem(_ item: RecordingItem) {
+        TextInserter.copyToClipboard(item.text)
+        hud.showToast(
+            style: settings.recordingWindowStyle,
+            icon: "doc.on.doc.fill",
+            message: "Скопійовано в буфер обміну",
+            isWarning: false,
+            duration: 1.3
+        )
+    }
+
+    func exportHistory(format: String) -> URL? {
+        let items = historyItems.filter { !$0.noVoice && !$0.text.isEmpty }
+        guard !items.isEmpty else {
+            statusBannerMessage = "Історія порожня для експорту"
+            return nil
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm"
+        let timestamp = dateFormatter.string(from: Date())
+        let tempDir = home.appendingPathComponent("Downloads", isDirectory: true)
+
+        let outURL: URL
+        let content: String
+
+        switch format.lowercased() {
+        case "markdown", "md":
+            outURL = tempDir.appendingPathComponent("Шепіт_Історія_\(timestamp).md")
+            var md = "# Історія диктування «Шепіт»\n\n*Експортовано: \(Date().formatted()) · Записів: \(items.count)*\n\n---\n\n"
+            for item in items {
+                md += "### \(item.timestamp.formatted()) · \(item.appName.isEmpty ? "Застосунок" : item.appName) (\(item.wordCount) слів)\n"
+                md += "> Режим: \(item.modeName) · Движок: \(item.engineUsed)\n\n"
+                md += "\(item.text)\n\n---\n\n"
+            }
+            content = md
+
+        case "srt":
+            outURL = tempDir.appendingPathComponent("Шепіт_Субтитри_\(timestamp).srt")
+            var srt = ""
+            var currentSec: Double = 0
+            for (idx, item) in items.reversed().enumerated() {
+                let start = currentSec
+                let dur = max(1.5, item.durationMs / 1000.0)
+                let end = start + dur
+                currentSec = end + 0.5
+
+                func srtTime(_ sec: Double) -> String {
+                    let totalMs = Int(sec * 1000)
+                    let h = totalMs / 3600000
+                    let m = (totalMs % 3600000) / 60000
+                    let s = (totalMs % 60000) / 1000
+                    let ms = totalMs % 1000
+                    return String(format: "%02d:%02d:%02d,%03d", h, m, s, ms)
+                }
+
+                srt += "\(idx + 1)\n"
+                srt += "\(srtTime(start)) --> \(srtTime(end))\n"
+                srt += "\(item.text)\n\n"
+            }
+            content = srt
+
+        default: // txt
+            outURL = tempDir.appendingPathComponent("Шепіт_Історія_\(timestamp).txt")
+            var txt = "ІСТОРІЯ ДИКТУВАННЯ «ШЕПІТ» (\(items.count) записів)\n\n"
+            for item in items {
+                txt += "[\(item.timestamp.formatted()) | \(item.appName)]\n\(item.text)\n\n"
+            }
+            content = txt
+        }
+
+        do {
+            try content.write(to: outURL, atomically: true, encoding: .utf8)
+            statusBannerMessage = "Експортовано у Завантаження: \(outURL.lastPathComponent)"
+            NSWorkspace.shared.activateFileViewerSelecting([outURL])
+            return outURL
+        } catch {
+            statusBannerMessage = "Помилка експорту: \(error.localizedDescription)"
+            return nil
         }
     }
 }
