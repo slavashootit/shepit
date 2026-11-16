@@ -63,8 +63,8 @@ enum AppIconGenerator {
 
         // Ambient emerald-indigo aura glow in center
         let glowColors = [
-            NSColor(calibratedRed: 0.18, green: 0.84, blue: 0.68, alpha: 0.28).cgColor,
-            NSColor(calibratedRed: 0.28, green: 0.44, blue: 0.96, alpha: 0.08).cgColor,
+            NSColor(calibratedRed: 0.18, green: 0.84, blue: 0.68, alpha: 0.26).cgColor,
+            NSColor(calibratedRed: 0.18, green: 0.84, blue: 0.68, alpha: 0.06).cgColor,
             NSColor.clear.cgColor
         ] as CFArray
         if let glowGrad = CGGradient(colorsSpace: space, colors: glowColors, locations: [0.0, 0.55, 1.0]) {
@@ -79,19 +79,18 @@ enum AppIconGenerator {
             )
         }
 
-        // 7 Sculpted Acoustic Waveform Bars
-        let heights: [CGFloat] = [148, 256, 396, 504, 396, 256, 148]
-        let barWidth: CGFloat = 52
-        let spacing: CGFloat = 34
+        // «Ш у хвилі»: three tall bars between two short ones — a waveform that reads as the letter Ш
+        let heights: [CGFloat] = [190, 470, 470, 470, 190]
+        let barWidth: CGFloat = 70
+        let spacing: CGFloat = 46
         let totalWidth = CGFloat(heights.count) * barWidth + CGFloat(heights.count - 1) * spacing
         let startX = rect.midX - totalWidth / 2.0
 
         let barGradColors = [
-            NSColor(calibratedRed: 0.30, green: 0.94, blue: 0.74, alpha: 1.0).cgColor,
-            NSColor(calibratedRed: 0.22, green: 0.72, blue: 0.94, alpha: 1.0).cgColor,
-            NSColor(calibratedRed: 0.40, green: 0.48, blue: 0.98, alpha: 1.0).cgColor
+            NSColor(calibratedRed: 0.45, green: 0.98, blue: 0.80, alpha: 1.0).cgColor,
+            NSColor(calibratedRed: 0.16, green: 0.80, blue: 0.62, alpha: 1.0).cgColor
         ] as CFArray
-        let barGrad = CGGradient(colorsSpace: space, colors: barGradColors, locations: [0.0, 0.52, 1.0])
+        let barGrad = CGGradient(colorsSpace: space, colors: barGradColors, locations: [0.0, 1.0])
 
         for (i, h) in heights.enumerated() {
             let x = startX + CGFloat(i) * (barWidth + spacing)
@@ -140,6 +139,63 @@ enum AppIconGenerator {
     }
 }
 
+// MARK: - Menu bar glyph («Ш у хвилі», drawn in code so it differs from the stock waveform symbol)
+
+enum MenuBarGlyph {
+    enum State { case idle, recording, transcribing }
+
+    /// Resting bar heights as a share of the glyph height: short, tall, tall, tall, short.
+    private static let rest: [CGFloat] = [0.38, 1.0, 1.0, 1.0, 0.38]
+
+    static func image(state: State, level: CGFloat = 0, offline: Bool = false) -> NSImage {
+        let size = NSSize(width: 19, height: 16)
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill()
+            let barW: CGFloat = 2.2
+            let gap: CGFloat = 1.7
+            let total = CGFloat(rest.count) * barW + CGFloat(rest.count - 1) * gap
+            let x0 = rect.midX - total / 2
+            let maxH = rect.height - 2
+            for (i, share) in rest.enumerated() {
+                var h = share * maxH
+                switch state {
+                case .idle:
+                    break
+                case .recording:
+                    // Bars follow the voice: quiet → resting letter, loud → every bar stretches
+                    let wobble = 0.55 + 0.45 * abs(sin(CGFloat(i) * 1.9 + level * 9))
+                    h = max(3, maxH * (0.30 + 0.70 * min(1, level * 1.6) * wobble))
+                case .transcribing:
+                    h = barW
+                }
+                let bar = NSRect(x: x0 + CGFloat(i) * (barW + gap), y: rect.midY - h / 2, width: barW, height: h)
+                NSBezierPath(roundedRect: bar, xRadius: barW / 2, yRadius: barW / 2).fill()
+            }
+            if state == .recording {
+                // Solid dot marks an active recording even in silence
+                NSBezierPath(ovalIn: NSRect(x: rect.maxX - 4.2, y: rect.maxY - 4.2, width: 4.2, height: 4.2)).fill()
+            }
+            if offline && state == .idle {
+                // Strike-through: no network, local model only
+                let cut = NSBezierPath()
+                cut.move(to: NSPoint(x: rect.minX + 2.5, y: rect.minY + 1.5))
+                cut.line(to: NSPoint(x: rect.maxX - 2.5, y: rect.maxY - 1.5))
+                NSGraphicsContext.current?.compositingOperation = .destinationOut
+                cut.lineWidth = 3.6
+                cut.stroke()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                cut.lineWidth = 1.5
+                cut.lineCapStyle = .round
+                cut.stroke()
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "Шепіт"
+        return image
+    }
+}
+
 // MARK: - Application Delegate & Menu Bar Controller
 
 @MainActor
@@ -155,6 +211,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         app.onMenuStateChanged = { [weak self] in
             self?.rebuildStatusMenu()
             self?.updateStatusButtonIcon()
+        }
+        app.onVoiceLevelChanged = { [weak self] level in
+            self?.updateStatusGlyphLevel(level)
         }
         app.onOpenMainWindowRequested = { [weak self] section in
             if let section {
@@ -212,23 +271,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         rebuildStatusMenu()
     }
 
+    private var lastGlyphLevel: CGFloat = -1
+
     private func updateStatusButtonIcon() {
         guard let btn = statusItem?.button else { return }
-        let symbolName: String
-        switch AppState.shared.sessionPhase {
+        let app = AppState.shared
+        switch app.sessionPhase {
         case .idle:
-            symbolName = AppState.shared.isOnline ? "waveform" : "waveform.slash"
+            lastGlyphLevel = -1
+            btn.image = MenuBarGlyph.image(state: .idle, offline: !app.isOnline)
         case .recording:
-            symbolName = "waveform.circle.fill"
+            btn.image = MenuBarGlyph.image(state: .recording, level: max(0, lastGlyphLevel))
         case .transcribing:
-            symbolName = "ellipsis.circle"
+            lastGlyphLevel = -1
+            btn.image = MenuBarGlyph.image(state: .transcribing)
         }
+    }
 
-        let cfg = NSImage.SymbolConfiguration(pointSize: 14.5, weight: .semibold)
-        if let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Шепіт")?.withSymbolConfiguration(cfg) {
-            img.isTemplate = true
-            btn.image = img
-        }
+    /// Live voice level for the menu bar glyph; redraws only on a visible change.
+    private func updateStatusGlyphLevel(_ level: CGFloat) {
+        guard case .recording = AppState.shared.sessionPhase else { return }
+        let stepped = (level * 12).rounded() / 12
+        guard stepped != lastGlyphLevel else { return }
+        lastGlyphLevel = stepped
+        statusItem?.button?.image = MenuBarGlyph.image(state: .recording, level: stepped)
     }
 
     private func rebuildStatusMenu() {

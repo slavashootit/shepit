@@ -90,6 +90,7 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var permissionPollTimer: Timer?
 
     var onMenuStateChanged: (() -> Void)?
+    var onVoiceLevelChanged: ((CGFloat) -> Void)?
     var onOpenMainWindowRequested: ((AppSection?) -> Void)?
 
     private override init() {
@@ -152,6 +153,7 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
             Task { @MainActor in
                 self?.hud.updateWaveform(levels: levels, elapsed: elapsed)
                 self?.trackSilence(levels: levels)
+                self?.onVoiceLevelChanged?(self?.hud.model.currentLevel ?? 0)
             }
         }
 

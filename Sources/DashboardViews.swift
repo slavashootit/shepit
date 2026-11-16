@@ -118,9 +118,11 @@ struct MainDashboardView: View {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
                         .fill(Theme.accent)
                         .frame(width: 30, height: 30)
-                    Image(systemName: "waveform")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.black.opacity(0.78))
+                    HStack(alignment: .center, spacing: 2) {
+                        ForEach([0.38, 1.0, 1.0, 1.0, 0.38], id: \.self.hashValue) { share in
+                            Capsule().fill(Color.black.opacity(0.78)).frame(width: 2.4, height: 15 * CGFloat(share))
+                        }
+                    }
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Шепіт")
