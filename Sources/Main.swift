@@ -457,6 +457,19 @@ struct ShepitMain {
             exit(ok ? 0 : 1)
         }
 
+        if args.count >= 4 && args[1] == "--snapshot" {
+            // Developer tool: off-screen PNGs of every screen ("window") or every pill state ("hud")
+            AppState.snapshotMode = true
+            let snapApp = NSApplication.shared
+            snapApp.setActivationPolicy(.prohibited)
+            if args[2] == "hud" {
+                SnapshotTool.runHUD(outDir: args[3])
+            } else {
+                SnapshotTool.runMainWindow(outDir: args[3])
+            }
+            exit(0)
+        }
+
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
         let delegate = AppDelegate()

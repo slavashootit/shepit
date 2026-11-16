@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
     static let shared = AppState()
+    static var snapshotMode = false
 
     enum SessionPhase: Equatable {
         case idle
@@ -103,6 +104,9 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
         reloadHistory()
         applyAppearance()
         wireCallbacks()
+
+        // Snapshot tool renders screens off-screen: no hotkeys, no recognition worker, no network watcher
+        guard !AppState.snapshotMode else { return }
 
         hotkeyManager.start()
         engine.startAndWarmup()
@@ -340,7 +344,7 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
             hotkeyManager.isHandsFreeLocked = handsFree
 
             SoundFX.shared.play(.start, style: settings.soundEffectStyle, volume: settings.soundVolume)
-            hud.showRecording(style: settings.recordingWindowStyle, modeName: chosenMode.name, handsFree: handsFree)
+            hud.showRecording(style: settings.recordingWindowStyle, modeName: chosenMode.name, handsFree: handsFree, isOffline: !isOnline)
             onMenuStateChanged?()
 
             if chosenMode.realtimePreview && settings.recordingWindowStyle == .classic {
@@ -369,8 +373,10 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
         hotkeyManager.isRecordingActive = false
         hotkeyManager.isHandsFreeLocked = false
         MediaPlaybackController.shared.endRecording(behavior: settings.playbackBehavior)
-        hud.hide()
-        if !silent {
+        if silent {
+            hud.hide()
+        } else {
+            hud.showCancelled(style: settings.recordingWindowStyle)
             SoundFX.shared.play(.cancel, style: settings.soundEffectStyle, volume: settings.soundVolume)
         }
         onMenuStateChanged?()
@@ -438,7 +444,7 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                         self.storage.saveRecording(emptyItem)
                         self.reloadHistory()
                     }
-                    self.hud.showToast(style: self.settings.recordingWindowStyle, icon: "waveform.slash", message: "Голосу не виявлено", isWarning: false, duration: 1.2)
+                    self.hud.showToast(style: self.settings.recordingWindowStyle, icon: "waveform.slash", message: "Голосу не виявлено", duration: 1.2, tone: .neutral)
                     return
                 }
 
@@ -459,8 +465,9 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                             style: self.settings.recordingWindowStyle,
                             icon: "doc.on.clipboard.fill",
                             message: "У буфері (⌘V) · Увімкніть Доступність для авто-вставки",
-                            isWarning: true,
-                            duration: 2.8
+                            duration: 2.8,
+                            tone: .neutral,
+                            onTap: { [weak self] in self?.onOpenMainWindowRequested?(.configuration) }
                         )
                     } else if let note = Self.offlineNote(for: resp) {
                         // Calm, non-alarming: the text is in place, it just skipped an online step
@@ -468,11 +475,11 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                             style: self.settings.recordingWindowStyle,
                             icon: "wifi.slash",
                             message: note,
-                            isWarning: false,
-                            duration: 1.9
+                            duration: 1.9,
+                            tone: .neutral
                         )
                     } else {
-                        self.hud.hide()
+                        self.hud.showDone(style: self.settings.recordingWindowStyle)
                     }
                 }
 
@@ -532,7 +539,18 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 )
                 self.storage.saveRecording(fallbackItem)
                 self.reloadHistory()
-                self.hud.showToast(style: self.settings.recordingWindowStyle, icon: "exclamationmark.triangle.fill", message: err.localizedDescription, isWarning: true, duration: 2.5)
+                // Tapping the error opens History, where the saved audio can be retried
+                self.hud.showToast(
+                    style: self.settings.recordingWindowStyle,
+                    icon: "exclamationmark.triangle.fill",
+                    message: err.localizedDescription,
+                    duration: 4.0,
+                    tone: .error,
+                    onTap: { [weak self] in
+                        self?.hud.hide()
+                        self?.onOpenMainWindowRequested?(.history)
+                    }
+                )
             }
         }
     }
