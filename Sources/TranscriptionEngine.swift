@@ -9,6 +9,15 @@ struct TranscriptionResponse {
     var engineUsed: String
     var groqAssisted: Bool
     var llmApplied: Bool
+    /// ok | not_needed | offline | timeout | failed — what happened to the online double-check
+    var netStatus: String = "not_needed"
+    /// none | applied | offline | failed — what happened to the AI post-processing
+    var llmStatus: String = "none"
+    /// Single-word swaps Groq made over the local model (feeds the learning vocabulary)
+    var corrections: [(from: String, to: String)] = []
+
+    var onlineCheckSkipped: Bool { netStatus == "offline" || netStatus == "timeout" || netStatus == "failed" }
+    var llmSkipped: Bool { llmStatus == "offline" || llmStatus == "failed" }
 }
 
 final class TranscriptionEngine {
@@ -20,6 +29,8 @@ final class TranscriptionEngine {
     private var pendingCallbacks: [String: (Result<[String: Any], Error>) -> Void] = [:]
 
     var onStatusUpdate: ((WorkerStatusInfo) -> Void)?
+    /// Mirrors NetworkMonitor; written from the main queue, read when a request is built.
+    var isOnline = true
     private var currentStatus = WorkerStatusInfo()
 
     init() {}
@@ -89,8 +100,10 @@ final class TranscriptionEngine {
         forceEngine: EngineChoice? = nil,
         context: [String: Any]? = nil,
         isFile: Bool = false,
+        forceNetwork: Bool = false,
         completion: @escaping (Result<TranscriptionResponse, Error>) -> Void
     ) {
+        let online = isOnline
         ioQueue.async { [weak self] in
             guard let self else { return }
             self.ensureProcessStarted()
@@ -115,7 +128,9 @@ final class TranscriptionEngine {
                 "autocapitalize": mode.autocapitalize,
                 "enable_voice_commands": settings.enableVoiceCommands,
                 "enable_smart_formatting": settings.enableSmartFormatting,
-                "is_file": isFile
+                "is_file": isFile,
+                "online": online,
+                "force_network": forceNetwork
             ]
             if let context, !context.isEmpty {
                 payload["context"] = context
@@ -125,23 +140,95 @@ final class TranscriptionEngine {
             self.sendRawCommand(payload, timeout: timeoutSec) { [weak self] result in
                 switch result {
                 case .success(let dict):
-                    let resp = TranscriptionResponse(
-                        noVoice: (dict["no_voice"] as? Bool) ?? false,
-                        text: (dict["text"] as? String) ?? "",
-                        rawText: (dict["raw_text"] as? String) ?? "",
-                        durationSec: (dict["duration_sec"] as? Double) ?? 0,
-                        processingMs: (dict["processing_ms"] as? Double) ?? 0,
-                        engineUsed: (dict["engine_used"] as? String) ?? chosenEngine.shortBadge,
-                        groqAssisted: (dict["groq_assisted"] as? Bool) ?? false,
-                        llmApplied: (dict["llm_applied"] as? Bool) ?? false
-                    )
+                    let resp = Self.parseResponse(dict, fallbackEngine: chosenEngine.shortBadge)
                     DispatchQueue.main.async { completion(.success(resp)) }
                     self?.refreshStatus()
+                case .failure(let err):
+                    // The worker hung or was reset: the audio is still on disk, so try once more
+                    // with the local model only — no network, no AI — before reporting a failure.
+                    let code = (err as NSError).code
+                    guard let self, !isFile, code == -4 || code == -9 else {
+                        DispatchQueue.main.async { completion(.failure(err)) }
+                        return
+                    }
+                    var localPayload = payload
+                    localPayload["engine"] = EngineChoice.parakeet.rawValue
+                    localPayload["llm_mode"] = ""
+                    localPayload["online"] = false
+                    localPayload["force_network"] = false
+                    self.ensureProcessStarted()
+                    self.sendRawCommand(localPayload, timeout: 30.0) { retry in
+                        switch retry {
+                        case .success(let dict):
+                            var resp = Self.parseResponse(dict, fallbackEngine: EngineChoice.parakeet.shortBadge)
+                            resp.netStatus = "timeout"
+                            resp.llmStatus = mode.llmMode.isEmpty ? "none" : "offline"
+                            DispatchQueue.main.async { completion(.success(resp)) }
+                        case .failure:
+                            DispatchQueue.main.async { completion(.failure(err)) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// AI-only pass over an already recognised text (History → «Обробити ШІ»).
+    func postprocess(
+        text: String,
+        mode: ShepitMode,
+        settings: ShepitSettings,
+        completion: @escaping (Result<(text: String, applied: Bool), Error>) -> Void
+    ) {
+        let online = isOnline
+        ioQueue.async { [weak self] in
+            guard let self else { return }
+            self.ensureProcessStarted()
+            let activeReplacements: [[String: String]] = settings.replacements
+                .filter { $0.enabled && !$0.from.trimmingCharacters(in: .whitespaces).isEmpty }
+                .map { ["from": $0.from, "to": $0.to] }
+            let payload: [String: Any] = [
+                "cmd": "postprocess",
+                "text": text,
+                "llm_mode": mode.llmMode,
+                "custom_prompt": mode.customPrompt,
+                "autocapitalize": mode.autocapitalize,
+                "replacements": activeReplacements,
+                "online": online
+            ]
+            self.sendRawCommand(payload, timeout: 30.0) { result in
+                switch result {
+                case .success(let dict):
+                    let out = (dict["text"] as? String) ?? text
+                    let applied = (dict["llm_applied"] as? Bool) ?? false
+                    DispatchQueue.main.async { completion(.success((out, applied))) }
                 case .failure(let err):
                     DispatchQueue.main.async { completion(.failure(err)) }
                 }
             }
         }
+    }
+
+    private static func parseResponse(_ dict: [String: Any], fallbackEngine: String) -> TranscriptionResponse {
+        var resp = TranscriptionResponse(
+            noVoice: (dict["no_voice"] as? Bool) ?? false,
+            text: (dict["text"] as? String) ?? "",
+            rawText: (dict["raw_text"] as? String) ?? "",
+            durationSec: (dict["duration_sec"] as? Double) ?? 0,
+            processingMs: (dict["processing_ms"] as? Double) ?? 0,
+            engineUsed: (dict["engine_used"] as? String) ?? fallbackEngine,
+            groqAssisted: (dict["groq_assisted"] as? Bool) ?? false,
+            llmApplied: (dict["llm_applied"] as? Bool) ?? false
+        )
+        resp.netStatus = (dict["net_status"] as? String) ?? "not_needed"
+        resp.llmStatus = (dict["llm_status"] as? String) ?? "none"
+        if let list = dict["corrections"] as? [[String: Any]] {
+            resp.corrections = list.compactMap { item in
+                guard let from = item["from"] as? String, let to = item["to"] as? String else { return nil }
+                return (from: from, to: to)
+            }
+        }
+        return resp
     }
 
     // MARK: - Subprocess Management

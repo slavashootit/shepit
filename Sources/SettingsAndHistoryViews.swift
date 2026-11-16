@@ -894,6 +894,28 @@ struct HistorySectionView: View {
         return buckets
     }
 
+    private func historyBadge(_ label: String, tint: Color) -> some View {
+        Text(label)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundColor(tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1.5)
+            .background(Capsule().fill(tint.opacity(0.14)))
+    }
+
+    private func historyAction(_ label: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.07)))
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
     private func historyCard(_ item: RecordingItem) -> some View {
         let isCopied = app.uiCopiedItemID == item.id
         let isPlaying = app.playingItemID == item.id
@@ -932,12 +954,13 @@ struct HistorySectionView: View {
                 }
 
                 if item.groqAssisted {
-                    Text("Groq ⚡")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(Color(red: 0.98, green: 0.54, blue: 0.24))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1.5)
-                        .background(Capsule().fill(Color(red: 0.98, green: 0.54, blue: 0.24).opacity(0.14)))
+                    historyBadge("Groq", tint: Color(red: 0.98, green: 0.54, blue: 0.24))
+                }
+                if item.netPending || item.llmPending {
+                    historyBadge(item.llmPending && !item.netPending ? "без ШІ" : "офлайн", tint: .secondary)
+                        .help(item.llmPending
+                              ? "Вставлено без ШІ-обробки — мережі не було"
+                              : "Вставлено без онлайн-перевірки — мережі не було")
                 }
 
                 Spacer()
@@ -951,18 +974,35 @@ struct HistorySectionView: View {
                     .buttonStyle(.plain)
                     .help(isPlaying ? "Зупинити відтворення" : "Прослухати запис")
 
-                    if app.workerStatus.hasGroqKey {
-                        Button(action: { app.retranscribeHistoryItem(item, engineChoice: .groq) }) {
-                            Text("Groq")
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.07)))
+                    if item.isFailedRecognition {
+                        historyAction("Повторити", help: "Розпізнати цей запис ще раз локальною моделлю") {
+                            app.retranscribeHistoryItem(item, engineChoice: .parakeet)
                         }
-                        .buttonStyle(.plain)
-                        .help("Перерозпізнати цей запис через Groq Whisper Large v3")
+                    } else if app.workerStatus.hasGroqKey {
+                        historyAction(
+                            item.netPending ? "Перевірити онлайн" : "Groq",
+                            help: app.isOnline
+                                ? "Перерозпізнати цей запис через Groq Whisper Large v3"
+                                : "Немає мережі — перевірка стане доступною, коли з'явиться інтернет"
+                        ) {
+                            app.retranscribeHistoryItem(item, engineChoice: .groq)
+                        }
+                        .disabled(!app.isOnline)
+                        .opacity(app.isOnline ? 1 : 0.45)
                     }
+                }
+
+                if item.llmPending && !item.noVoice {
+                    historyAction(
+                        "Обробити ШІ",
+                        help: app.isOnline
+                            ? "Застосувати ШІ-обробку режиму «\(item.modeName)» до цього тексту"
+                            : "Немає мережі — обробка стане доступною, коли з'явиться інтернет"
+                    ) {
+                        app.applyAIToHistoryItem(item)
+                    }
+                    .disabled(!app.isOnline)
+                    .opacity(app.isOnline ? 1 : 0.45)
                 }
 
                 if !item.noVoice && !item.text.isEmpty {

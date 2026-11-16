@@ -217,7 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let symbolName: String
         switch AppState.shared.sessionPhase {
         case .idle:
-            symbolName = "waveform"
+            symbolName = AppState.shared.isOnline ? "waveform" : "waveform.slash"
         case .recording:
             symbolName = "waveform.circle.fill"
         case .transcribing:

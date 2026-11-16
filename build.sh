@@ -20,6 +20,7 @@ swiftc -O -swift-version 5 -target arm64-apple-macosx15.0 -parse-as-library \
   -framework ApplicationServices \
   -framework ServiceManagement \
   -framework UniformTypeIdentifiers \
+  -framework Network \
   -lsqlite3
 
 [[ -x "$B/Shepit" ]]
@@ -62,6 +63,12 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </plist>
 EOF
 
-codesign --force --deep --identifier "ua.slava.shepit" --sign - "$APP"
+# A stable signing identity keeps macOS permissions (Accessibility, microphone) across rebuilds;
+# ad-hoc signatures change on every build and silently drop them.
+SIGN_ID="${SHEPIT_SIGN_ID:-}"
+if [[ -z "$SIGN_ID" ]] && security find-identity -v -p codesigning 2>/dev/null | grep -q '"Kadr Dev"'; then
+  SIGN_ID="Kadr Dev"
+fi
+codesign --force --deep --identifier "ua.slava.shepit" --sign "${SIGN_ID:--}" "$APP"
 touch "$APP"
 echo "OK → $APP"

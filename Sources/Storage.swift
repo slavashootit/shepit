@@ -142,6 +142,10 @@ final class StorageManager: @unchecked Sendable {
         );
         CREATE INDEX IF NOT EXISTS idx_history_ts ON history_items(timestamp DESC);
         """)
+
+        // Additive migrations: sqlite reports "duplicate column" on later launches, which execSQL ignores
+        execSQL("ALTER TABLE history_items ADD COLUMN net_pending INTEGER NOT NULL DEFAULT 0;")
+        execSQL("ALTER TABLE history_items ADD COLUMN llm_pending INTEGER NOT NULL DEFAULT 0;")
     }
 
     private func execSQL(_ sql: String) {
@@ -161,8 +165,9 @@ final class StorageManager: @unchecked Sendable {
             let histSQL = """
             INSERT OR REPLACE INTO history_items
             (id, timestamp, duration_ms, word_count, char_count, processing_ms, app_name, app_bundle_id,
-             mode_name, engine_used, text, raw_text, audio_file, no_voice, from_file, groq_assisted)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+             mode_name, engine_used, text, raw_text, audio_file, no_voice, from_file, groq_assisted,
+             net_pending, llm_pending)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
             var stmt: OpaquePointer?
             if sqlite3_prepare_v2(db, histSQL, -1, &stmt, nil) == SQLITE_OK {
@@ -182,6 +187,8 @@ final class StorageManager: @unchecked Sendable {
                 sqlite3_bind_int(stmt, 14, item.noVoice ? 1 : 0)
                 sqlite3_bind_int(stmt, 15, item.fromFile ? 1 : 0)
                 sqlite3_bind_int(stmt, 16, item.groqAssisted ? 1 : 0)
+                sqlite3_bind_int(stmt, 17, item.netPending ? 1 : 0)
+                sqlite3_bind_int(stmt, 18, item.llmPending ? 1 : 0)
                 sqlite3_step(stmt)
                 sqlite3_finalize(stmt)
             }
@@ -248,7 +255,7 @@ final class StorageManager: @unchecked Sendable {
                 sql = """
                 SELECT id, timestamp, duration_ms, word_count, char_count, processing_ms,
                        app_name, app_bundle_id, mode_name, engine_used, text, raw_text,
-                       audio_file, no_voice, from_file, groq_assisted
+                       audio_file, no_voice, from_file, groq_assisted, net_pending, llm_pending
                 FROM history_items
                 ORDER BY timestamp DESC
                 LIMIT ?;
@@ -257,7 +264,7 @@ final class StorageManager: @unchecked Sendable {
                 sql = """
                 SELECT id, timestamp, duration_ms, word_count, char_count, processing_ms,
                        app_name, app_bundle_id, mode_name, engine_used, text, raw_text,
-                       audio_file, no_voice, from_file, groq_assisted
+                       audio_file, no_voice, from_file, groq_assisted, net_pending, llm_pending
                 FROM history_items
                 WHERE text LIKE ? OR app_name LIKE ? OR mode_name LIKE ?
                 ORDER BY timestamp DESC
@@ -294,7 +301,9 @@ final class StorageManager: @unchecked Sendable {
                         audioFile: colString(stmt, 12),
                         noVoice: sqlite3_column_int(stmt, 13) != 0,
                         fromFile: sqlite3_column_int(stmt, 14) != 0,
-                        groqAssisted: sqlite3_column_int(stmt, 15) != 0
+                        groqAssisted: sqlite3_column_int(stmt, 15) != 0,
+                        netPending: sqlite3_column_int(stmt, 16) != 0,
+                        llmPending: sqlite3_column_int(stmt, 17) != 0
                     )
                     items.append(item)
                 }

@@ -163,7 +163,7 @@ struct MainDashboardView: View {
                     Text(app.workerStatus.isModelLoaded ? "Parakeet v3 у пам'яті" : "Прогрівання моделі…")
                         .font(.system(size: 11.5, weight: .semibold))
                         .lineLimit(1)
-                    Text(app.workerStatus.hasGroqKey ? "Гібрид із Groq активний" : "Локальний офлайн-режим")
+                    Text(networkStatusLine)
                         .font(.system(size: 10.5))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
@@ -187,6 +187,11 @@ struct MainDashboardView: View {
             }
         }
         .background(Color.primary.opacity(0.02))
+    }
+
+    private var networkStatusLine: String {
+        if !app.isOnline { return "Немає мережі · працює локально" }
+        return app.workerStatus.hasGroqKey ? "Гібрид із Groq активний" : "Локальний офлайн-режим"
     }
 
     private var engineDotColor: Color {

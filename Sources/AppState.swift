@@ -35,6 +35,7 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
     @Published var stats: DashboardStats = .empty
     @Published var workerStatus = WorkerStatusInfo()
+    @Published var isOnline: Bool = true
 
     @Published var hasMicPermission: Bool = false
     @Published var hasAccessibilityPermission: Bool = false
@@ -105,6 +106,16 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
         hotkeyManager.start()
         engine.startAndWarmup()
+
+        NetworkMonitor.shared.onChange = { [weak self] online in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isOnline = online
+                self.engine.isOnline = online
+                self.onMenuStateChanged?()
+            }
+        }
+        NetworkMonitor.shared.start()
 
         permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -451,6 +462,15 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                             isWarning: true,
                             duration: 2.8
                         )
+                    } else if let note = Self.offlineNote(for: resp) {
+                        // Calm, non-alarming: the text is in place, it just skipped an online step
+                        self.hud.showToast(
+                            style: self.settings.recordingWindowStyle,
+                            icon: "wifi.slash",
+                            message: note,
+                            isWarning: false,
+                            duration: 1.9
+                        )
                     } else {
                         self.hud.hide()
                     }
@@ -477,7 +497,9 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                         audioFile: archivedFile,
                         noVoice: false,
                         fromFile: false,
-                        groqAssisted: resp.groqAssisted
+                        groqAssisted: resp.groqAssisted,
+                        netPending: resp.onlineCheckSkipped,
+                        llmPending: resp.llmSkipped
                     )
                     storageRef.saveRecording(item)
                     DispatchQueue.main.async {
@@ -500,8 +522,8 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                     appName: appName,
                     appBundleID: appBundle,
                     modeName: mode.name,
-                    engineUsed: "Помилка (аудіо збережено)",
-                    text: "[Не вдалося розпізнати — натисніть «Groq» в Історії, щоб повторити]",
+                    engineUsed: RecordingItem.failedEngineLabel,
+                    text: "[Не вдалося розпізнати — аудіо збережено, натисніть «Повторити» в Історії]",
                     rawText: "",
                     audioFile: savedFile,
                     noVoice: false,
@@ -618,21 +640,46 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
 
-    func retranscribeHistoryItem(_ item: RecordingItem, engineChoice: EngineChoice) {
+    /// Mode the recording was made in (so a retry applies the same AI step), else the active one.
+    private func modeForItem(_ item: RecordingItem) -> ShepitMode {
+        settings.modes.first(where: { $0.name == item.modeName }) ?? settings.activeMode
+    }
+
+    static func offlineNote(for resp: TranscriptionResponse) -> String? {
+        switch (resp.onlineCheckSkipped, resp.llmSkipped) {
+        case (true, true): return "Вставлено без онлайн-перевірки й ШІ"
+        case (false, true): return "Вставлено без ШІ-обробки"
+        case (true, false): return "Вставлено без онлайн-перевірки"
+        default: return nil
+        }
+    }
+
+    func retranscribeHistoryItem(_ item: RecordingItem, engineChoice: EngineChoice, silent: Bool = false) {
         guard !item.audioFile.isEmpty else { return }
         let url = storage.resolveAudioURL(item.audioFile)
         guard FileManager.default.fileExists(atPath: url.path) else {
-            statusBannerMessage = "Аудіофайл для цього запису вже очищено"
+            if !silent { statusBannerMessage = "Аудіофайл для цього запису вже очищено" }
             return
         }
-        statusBannerMessage = "Перерозпізнаємо через \(engineChoice.shortBadge)…"
-        let mode = settings.activeMode
-        engine.transcribe(audioURL: url, mode: mode, settings: settings, forceEngine: engineChoice, isFile: true) { [weak self] result in
+        if !silent {
+            statusBannerMessage = engineChoice == .parakeet
+                ? "Розпізнаємо ще раз локально…"
+                : "Перевіряємо онлайн через \(engineChoice.shortBadge)…"
+        }
+        let mode = modeForItem(item)
+        engine.transcribe(
+            audioURL: url,
+            mode: mode,
+            settings: settings,
+            forceEngine: engineChoice,
+            isFile: true,
+            forceNetwork: engineChoice != .parakeet
+        ) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let resp):
                 guard !resp.text.isEmpty else {
-                    self.statusBannerMessage = "Мовлення не знайдено"
+                    if !silent { self.statusBannerMessage = "Мовлення не знайдено" }
                     return
                 }
                 var updated = item
@@ -643,13 +690,49 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 updated.engineUsed = resp.engineUsed
                 updated.noVoice = false
                 updated.groqAssisted = resp.groqAssisted
+                updated.netPending = resp.onlineCheckSkipped
+                updated.llmPending = resp.llmSkipped
                 self.storage.saveRecording(updated)
-                TextInserter.copyToClipboard(resp.text)
                 self.reloadHistory()
                 self.reloadStats()
-                self.statusBannerMessage = "Оновлено та скопійовано в буфер!"
+                guard !silent else { return }
+                TextInserter.copyToClipboard(resp.text)
+                if let note = Self.offlineNote(for: resp) {
+                    self.statusBannerMessage = "Оновлено локально й скопійовано · \(note.lowercased())"
+                } else {
+                    self.statusBannerMessage = "Оновлено та скопійовано в буфер!"
+                }
             case .failure(let err):
-                self.statusBannerMessage = "Помилка: \(err.localizedDescription)"
+                if !silent { self.statusBannerMessage = "Помилка: \(err.localizedDescription)" }
+            }
+        }
+    }
+
+    /// History → «Обробити ШІ»: runs only the AI step the mode asked for over the saved text.
+    func applyAIToHistoryItem(_ item: RecordingItem, silent: Bool = false) {
+        let mode = modeForItem(item)
+        guard !mode.llmMode.isEmpty, !item.text.isEmpty else { return }
+        if !silent { statusBannerMessage = "Обробляємо ШІ («\(mode.name)»)…" }
+        engine.postprocess(text: item.text, mode: mode, settings: settings) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let out):
+                guard out.applied else {
+                    if !silent { self.statusBannerMessage = "ШІ зараз недоступний — спробуйте пізніше" }
+                    return
+                }
+                var updated = item
+                updated.text = out.text
+                updated.wordCount = out.text.split(whereSeparator: \.isWhitespace).count
+                updated.charCount = out.text.count
+                updated.llmPending = false
+                self.storage.saveRecording(updated)
+                self.reloadHistory()
+                guard !silent else { return }
+                TextInserter.copyToClipboard(out.text)
+                self.statusBannerMessage = "Оброблено ШІ та скопійовано в буфер!"
+            case .failure(let err):
+                if !silent { self.statusBannerMessage = "Помилка: \(err.localizedDescription)" }
             }
         }
     }

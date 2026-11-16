@@ -17,13 +17,13 @@ import re
 import struct
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import urllib.error
 import urllib.request
 import uuid
 import wave
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 
 EXTRA_PATHS = [
@@ -95,6 +95,59 @@ def read_key(name: str, env_var: str = "") -> str:
         except Exception:
             return ""
     return ""
+
+
+# --- Network gate: hard wall-clock budgets so a half-dead network never blocks local text ---
+
+NET_COOLDOWN_SEC = 60.0
+_net_down_until = 0.0
+
+
+def net_available(online: bool) -> bool:
+    return online and time.monotonic() >= _net_down_until
+
+
+def net_trip() -> None:
+    global _net_down_until
+    _net_down_until = time.monotonic() + NET_COOLDOWN_SEC
+
+
+def net_reset() -> None:
+    global _net_down_until
+    _net_down_until = 0.0
+
+
+def net_call(fn, budget_sec: float):
+    """Runs fn() in a daemon thread with a hard total deadline.
+    Returns (value, status); status is ok | timeout | conn_error | http_error.
+    urllib's own timeout is per socket operation and does not cover DNS, so it cannot be trusted alone."""
+    box: dict = {}
+
+    def runner() -> None:
+        try:
+            box["value"] = fn()
+            box["status"] = "ok"
+        except urllib.error.HTTPError as exc:
+            box["status"] = "http_error"
+            box["error"] = f"HTTP {exc.code}"
+        except Exception as exc:  # URLError, socket timeout, DNS failure, bad payload
+            box["status"] = "conn_error"
+            box["error"] = str(exc)
+
+    th = threading.Thread(target=runner, daemon=True)
+    th.start()
+    th.join(max(0.05, budget_sec))
+    if th.is_alive():
+        net_trip()
+        log(f"Network call exceeded {budget_sec:.1f}s budget, pausing network for {NET_COOLDOWN_SEC:.0f}s")
+        return None, "timeout"
+    status = box.get("status", "conn_error")
+    if status == "conn_error":
+        net_trip()
+        log(f"Network unreachable ({box.get('error', '')}), pausing network for {NET_COOLDOWN_SEC:.0f}s")
+    elif status == "http_error":
+        log(f"Network call failed: {box.get('error', '')}")
+    return box.get("value"), status
 
 
 def is_hallucination(text: str) -> bool:
@@ -354,10 +407,11 @@ def call_groq_whisper(
     api_key: str,
     language: str,
     vocabulary: list[str],
-    timeout_sec: float = 2.6,
-) -> str | None:
+    timeout_sec: float = 3.0,
+) -> tuple[str | None, str]:
+    """Returns (text, status). status: ok | timeout | conn_error | http_error | empty."""
     if not api_key:
-        return None
+        return None, "http_error"
     boundary = f"----ShepitBoundary{uuid.uuid4().hex}"
     parts: list[bytes] = []
 
@@ -393,15 +447,18 @@ def call_groq_whisper(
         },
         method="POST",
     )
-    try:
+
+    def do_request() -> str:
         with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
-            txt = payload.get("text", "").strip()
-            if txt and not is_hallucination(txt):
-                return txt
-    except Exception as exc:
-        log(f"Groq whisper fallback skipped: {exc}")
-    return None
+            return payload.get("text", "").strip()
+
+    txt, status = net_call(do_request, timeout_sec)
+    if status != "ok":
+        return None, status
+    if txt and not is_hallucination(txt):
+        return txt, "ok"
+    return None, "empty"
 
 
 def apply_voice_commands_and_smart_formatting(
@@ -458,12 +515,16 @@ def apply_voice_commands_and_smart_formatting(
     return res.strip()
 
 
-def apply_llm_postprocess(
-    text: str, llm_mode: str, custom_prompt: str = "", context: dict | None = None
-) -> tuple[str, bool]:
-    if not llm_mode or not text.strip():
-        return text, False
+# Checked against the providers' model lists on 2026-11-16 (llama-3.3-70b and gemini-2.5-flash were retired
+# and answered 404, silently disabling every AI mode). Order = preference; a retired model falls through to the next.
+GROQ_LLM_MODELS: list[tuple[str, dict]] = [
+    ("qwen/qwen3.8-27b", {}),
+    ("openai/gpt-oss-120b", {"reasoning_effort": "low"}),
+]
+GEMINI_LLM_MODELS = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite"]
 
+
+def build_llm_system_prompt(llm_mode: str, custom_prompt: str, context: dict | None) -> str:
     if llm_mode == "clean":
         sys_prompt = (
             "Ти редактор живого диктування. Прибери тільки випадкові обмовки, заїкання, "
@@ -480,7 +541,7 @@ def apply_llm_postprocess(
     elif llm_mode == "custom" and custom_prompt.strip():
         sys_prompt = custom_prompt.strip() + "\nПоверни ТІЛЬКИ готовий результат без лапок і вступних слів."
     else:
-        return text, False
+        return ""
 
     if context:
         ctx_parts = []
@@ -492,24 +553,52 @@ def apply_llm_postprocess(
             ctx_parts.append(f"Контекст перед курсором:\n«««\n{context['surrounding_text']}\n»»»")
         if ctx_parts:
             sys_prompt += "\n\nКонтекст вікна користувача для точної та узгодженої відповіді:\n" + "\n".join(ctx_parts)
+    return sys_prompt
+
+
+def apply_llm_postprocess(
+    text: str,
+    llm_mode: str,
+    custom_prompt: str = "",
+    context: dict | None = None,
+    online: bool = True,
+    budget_sec: float = 5.0,
+) -> tuple[str, str]:
+    """Returns (text, status). status: none | applied | offline | failed.
+    The whole step (Groq, then Gemini) shares one wall-clock budget."""
+    if not llm_mode or not text.strip():
+        return text, "none"
+    sys_prompt = build_llm_system_prompt(llm_mode, custom_prompt, context)
+    if not sys_prompt:
+        return text, "none"
 
     groq_key = read_key("groq", "GROQ_API_KEY")
+    gemini_key = read_key("gemini", "GEMINI_API_KEY")
+    if not groq_key and not gemini_key:
+        return text, "failed"
+    if not net_available(online):
+        return text, "offline"
+
+    deadline = time.monotonic() + budget_sec
+
     if groq_key:
-        try:
-            body = json.dumps(
-                {
-                    "model": "llama-3.3-70b-versatile",
-                    "temperature": 0.15,
-                    "max_tokens": 2048,
-                    "messages": [
-                        {"role": "system", "content": sys_prompt},
-                        {"role": "user", "content": text},
-                    ],
-                }
-            ).encode("utf-8")
+        for model_id, extra in GROQ_LLM_MODELS:
+            groq_budget = deadline - time.monotonic()
+            if groq_budget < 0.8:
+                break
+            payload = {
+                "model": model_id,
+                "temperature": 0.15,
+                "max_tokens": 2048,
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": text},
+                ],
+            }
+            payload.update(extra)
             req = urllib.request.Request(
                 "https://api.groq.com/openai/v1/chat/completions",
-                data=body,
+                data=json.dumps(payload).encode("utf-8"),
                 headers={
                     "Authorization": f"Bearer {groq_key}",
                     "Content-Type": "application/json",
@@ -517,18 +606,26 @@ def apply_llm_postprocess(
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=4.5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                out = data["choices"][0]["message"]["content"].strip()
-                if out:
-                    return out, True
-        except Exception as exc:
-            log(f"Groq LLM postprocess skipped: {exc}")
 
-    gemini_key = read_key("gemini", "GEMINI_API_KEY")
+            def groq_request(req=req, groq_budget=groq_budget) -> str:
+                with urllib.request.urlopen(req, timeout=groq_budget) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    return (data["choices"][0]["message"].get("content") or "").strip()
+
+            out, status = net_call(groq_request, groq_budget)
+            if status == "ok" and out:
+                return out, "applied"
+            if status in ("timeout", "conn_error"):
+                # The network itself is the problem: another model or provider would only add waiting
+                return text, "offline"
+            # http_error (model retired, rate limit) or empty answer: try the next model
+
     if gemini_key:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
+        for model_id in GEMINI_LLM_MODELS:
+            remaining = deadline - time.monotonic()
+            if remaining < 1.0:
+                break
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent"
             body = json.dumps(
                 {
                     "systemInstruction": {"parts": [{"text": sys_prompt}]},
@@ -536,21 +633,25 @@ def apply_llm_postprocess(
                     "generationConfig": {"temperature": 0.15},
                 }
             ).encode("utf-8")
-            req = urllib.request.Request(
+            g_req = urllib.request.Request(
                 url,
                 data=body,
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", "x-goog-api-key": gemini_key},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                out = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                if out:
-                    return out, True
-        except Exception as exc:
-            log(f"Gemini LLM postprocess skipped: {exc}")
 
-    return text, False
+            def gemini_request(g_req=g_req, remaining=remaining) -> str:
+                with urllib.request.urlopen(g_req, timeout=remaining) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+            out, status = net_call(gemini_request, remaining)
+            if status == "ok" and out:
+                return out, "applied"
+            if status in ("timeout", "conn_error"):
+                return text, "offline"
+
+    return text, "failed"
 
 
 def apply_replacements_and_format(
@@ -570,6 +671,23 @@ def apply_replacements_and_format(
     if autocapitalize and res:
         res = res[0].upper() + res[1:]
     return res
+
+
+def diff_corrections(before: list[str], after: list[str]) -> list[dict]:
+    """Single-word swaps Groq made over Parakeet — raw material for the learning vocabulary."""
+    import difflib
+
+    strip = ".,!?…:;«»\"'()—–-"
+    out: list[dict] = []
+    matcher = difflib.SequenceMatcher(a=[w.lower().strip(strip) for w in before], b=[w.lower().strip(strip) for w in after], autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "replace" or (i2 - i1) != 1 or (j2 - j1) != 1:
+            continue
+        src = before[i1].strip(strip)
+        dst = after[j1].strip(strip)
+        if len(src) >= 3 and len(dst) >= 3 and src.lower() != dst.lower():
+            out.append({"from": src, "to": dst})
+    return out[:8]
 
 
 class ParakeetWorker:
@@ -697,9 +815,63 @@ class ParakeetWorker:
         enable_commands = bool(req.get("enable_voice_commands", True))
         enable_smart = bool(req.get("enable_smart_formatting", True))
         context = req.get("context") or {}
+        online = bool(req.get("online", True))
+        if req.get("force_network"):
+            # Explicit user retry from History: ignore the cooldown after an earlier failure
+            net_reset()
+
+        # Wall-clock budgets: live dictation must never wait long for the network
+        check_budget = 25.0 if is_file else 3.0
+        llm_budget = 20.0 if is_file else 5.0
 
         groq_key = read_key("groq", "GROQ_API_KEY")
         local_available = HAS_MLX and self.has_local_model_files()
+
+        def finish(
+            raw_text: str,
+            duration_sec: float,
+            engine_used: str,
+            groq_assisted: bool,
+            net_status: str,
+            corrections: list | None = None,
+        ) -> dict:
+            final_text = apply_voice_commands_and_smart_formatting(
+                raw_text, enable_commands=enable_commands, enable_smart_formatting=enable_smart
+            )
+            llm_status = "none"
+            if llm_mode:
+                final_text, llm_status = apply_llm_postprocess(
+                    final_text, llm_mode, custom_prompt, context=context, online=online, budget_sec=llm_budget
+                )
+            final_text = apply_replacements_and_format(final_text, replacements, autocapitalize)
+            return {
+                "no_voice": False,
+                "text": final_text,
+                "raw_text": raw_text,
+                "duration_sec": duration_sec,
+                "processing_ms": int((time.perf_counter() - t0) * 1000),
+                "engine_used": engine_used,
+                "groq_assisted": groq_assisted,
+                "llm_applied": llm_status == "applied",
+                "net_status": net_status,
+                "llm_status": llm_status,
+                "corrections": corrections or [],
+            }
+
+        def no_voice(duration_sec: float, engine_used: str = "vad") -> dict:
+            return {
+                "no_voice": True,
+                "text": "",
+                "raw_text": "",
+                "duration_sec": duration_sec,
+                "processing_ms": int((time.perf_counter() - t0) * 1000),
+                "engine_used": engine_used,
+                "groq_assisted": False,
+                "llm_applied": False,
+                "net_status": "not_needed",
+                "llm_status": "none",
+                "corrections": [],
+            }
 
         # Fresh Mac fallback before local model is installed
         if not local_available:
@@ -709,38 +881,15 @@ class ParakeetWorker:
                 )
             wav_data, dur_sec, has_v = pure_wav_stats_and_bytes(audio_path)
             if not has_v:
-                return {
-                    "no_voice": True,
-                    "text": "",
-                    "raw_text": "",
-                    "duration_sec": round(dur_sec, 3),
-                    "processing_ms": int((time.perf_counter() - t0) * 1000),
-                    "engine_used": "vad",
-                    "groq_assisted": False,
-                    "llm_applied": False,
-                }
-            g_text = call_groq_whisper(
+                return no_voice(round(dur_sec, 3))
+            if not net_available(online):
+                raise RuntimeError("Немає інтернету, а офлайн-модель Parakeet v3 ще не встановлено (вкладка «Моделі»).")
+            g_text, _ = call_groq_whisper(
                 wav_data, groq_key, language, vocabulary, timeout_sec=30.0 if is_file else 8.0
             )
             if not g_text:
                 raise RuntimeError("Groq не відповів — перевірте інтернет або встановіть офлайн-модель Parakeet v3.")
-            processed = apply_voice_commands_and_smart_formatting(
-                g_text, enable_commands=enable_commands, enable_smart_formatting=enable_smart
-            )
-            final_text, llm_applied = apply_llm_postprocess(
-                processed, llm_mode, custom_prompt, context=context
-            )
-            final_text = apply_replacements_and_format(final_text, replacements, autocapitalize)
-            return {
-                "no_voice": False,
-                "text": final_text,
-                "raw_text": g_text,
-                "duration_sec": round(dur_sec, 3),
-                "processing_ms": int((time.perf_counter() - t0) * 1000),
-                "engine_used": "Groq Whisper v3",
-                "groq_assisted": True,
-                "llm_applied": llm_applied,
-            }
+            return finish(g_text, round(dur_sec, 3), "Groq Whisper v3", True, "ok")
 
         raw_samples = load_samples_16k(audio_path)
         duration_sec = round(raw_samples.size / 16000.0, 3)
@@ -753,29 +902,27 @@ class ParakeetWorker:
             silence_removal=silence_removal,
         )
         if not has_voice:
-            return {
-                "no_voice": True,
-                "text": "",
-                "raw_text": "",
-                "duration_sec": duration_sec,
-                "processing_ms": int((time.perf_counter() - t0) * 1000),
-                "engine_used": "vad",
-                "groq_assisted": False,
-                "llm_applied": False,
-            }
+            return no_voice(duration_sec)
 
         groq_assisted = False
         engine_used = "Parakeet v3"
+        net_status = "not_needed"
+        corrections: list[dict] = []
 
         if engine == "groq" and groq_key:
-            wav_data = wav_bytes_from_samples(samples, 16000)
-            g_text = call_groq_whisper(
-                wav_data,
-                groq_key,
-                language,
-                vocabulary,
-                timeout_sec=25.0 if is_file else 6.0,
-            )
+            g_text = None
+            if net_available(online):
+                wav_data = wav_bytes_from_samples(samples, 16000)
+                g_text, g_status = call_groq_whisper(
+                    wav_data,
+                    groq_key,
+                    language,
+                    vocabulary,
+                    timeout_sec=25.0 if is_file else 6.0,
+                )
+                net_status = "ok" if g_text else ("failed" if g_status in ("http_error", "empty") else "timeout")
+            else:
+                net_status = "offline"
             if g_text:
                 raw_text = g_text
                 engine_used = "Groq Whisper v3"
@@ -784,71 +931,98 @@ class ParakeetWorker:
                 res = self.run_samples(samples)
                 raw_text = getattr(res, "text", "").replace("<unk>", "").strip()
                 engine_used = "Parakeet v3 (офлайн-резерв)"
+                if not raw_text:
+                    return no_voice(duration_sec, "Parakeet v3")
         else:
             res = self.run_samples(samples)
             words = extract_words(res)
             if not words:
-                return {
-                    "no_voice": True,
-                    "text": "",
-                    "raw_text": "",
-                    "duration_sec": duration_sec,
-                    "processing_ms": int((time.perf_counter() - t0) * 1000),
-                    "engine_used": "Parakeet v3",
-                    "groq_assisted": False,
-                    "llm_applied": False,
-                }
+                return no_voice(duration_sec, "Parakeet v3")
 
             raw_text = " ".join(w["w"] for w in words)
 
             if engine == "hybrid" and groq_key:
                 lang_hint = detect_language_hint(words, language)
                 windows = find_suspicious_windows(words, lang_hint)
-                if windows:
+                if windows and not net_available(online):
+                    net_status = "offline"
+                elif windows:
                     total_audio_sec = samples.size / 16000.0
                     if total_audio_sec <= 20.0 and not is_file:
                         clip_bytes = wav_bytes_from_samples(samples, 16000)
-                        g_full = call_groq_whisper(
-                            clip_bytes, groq_key, lang_hint, vocabulary, timeout_sec=2.6
+                        g_full, g_status = call_groq_whisper(
+                            clip_bytes, groq_key, lang_hint, vocabulary, timeout_sec=check_budget
                         )
+                        if g_status in ("timeout", "conn_error"):
+                            net_status = "timeout"
+                        elif g_status == "http_error":
+                            net_status = "failed"
+                        else:
+                            net_status = "ok"
                         if g_full and len(g_full.split()) >= max(1, int(len(words) * 0.78)):
+                            corrections = diff_corrections([w["w"] for w in words], g_full.split())
                             raw_text = g_full
                             groq_assisted = True
                             engine_used = "Parakeet v3 + Groq"
                     else:
                         max_windows = 6 if is_file else 2
                         target_windows = windows[:max_windows]
-                        win_timeout = 8.0 if is_file else 2.6
+                        win_timeout = 8.0 if is_file else check_budget
 
-                        def query_window(span: tuple[float, float]) -> tuple[int, int, str | None]:
+                        def query_window(span: tuple[float, float]) -> tuple[int, int, str | None, str]:
                             inside = [
                                 idx
                                 for idx, w in enumerate(words)
                                 if w["e"] > span[0] and w["s"] < span[1]
                             ]
                             if not inside:
-                                return -1, -1, None
+                                return -1, -1, None, "empty"
                             i0, i1 = inside[0], inside[-1]
                             a_s = max(0, int((words[i0]["s"] - 0.12) * 16000))
                             b_s = min(samples.size, int((words[i1]["e"] + 0.12) * 16000))
                             if b_s - a_s < int(16000 * 0.25):
-                                return -1, -1, None
+                                return -1, -1, None, "empty"
                             clip_bytes = wav_bytes_from_samples(samples[a_s:b_s], 16000)
-                            ans = call_groq_whisper(
+                            ans, st = call_groq_whisper(
                                 clip_bytes, groq_key, lang_hint, vocabulary, timeout_sec=win_timeout
                             )
-                            return i0, i1, ans
+                            return i0, i1, ans, st
+
+                        # Plain daemon threads with one shared deadline: a hung request can never hold the result
+                        results: list = [None] * len(target_windows)
+
+                        def run_window(slot: int, span: tuple[float, float]) -> None:
+                            try:
+                                results[slot] = query_window(span)
+                            except Exception as exc:
+                                log(f"Groq hybrid window failed: {exc}")
+
+                        threads = [
+                            threading.Thread(target=run_window, args=(i, sp), daemon=True)
+                            for i, sp in enumerate(target_windows)
+                        ]
+                        for th in threads:
+                            th.start()
+                        win_deadline = time.monotonic() + win_timeout + 0.3
+                        for th in threads:
+                            th.join(max(0.0, win_deadline - time.monotonic()))
 
                         splices: list[tuple[int, int, str]] = []
-                        with ThreadPoolExecutor(max_workers=min(2, len(target_windows))) as pool:
-                            futs = [pool.submit(query_window, sp) for sp in target_windows]
-                            try:
-                                for fut in futs:
-                                    i0, i1, g_ans = fut.result(timeout=win_timeout + 0.3)
-                                    if i0 >= 0 and g_ans:
-                                        splices.append((i0, i1, g_ans))
-                            except FuturesTimeout:
-                                log("Groq hybrid window timed out, keeping Parakeet")
+                        statuses = []
+                        for item in results:
+                            if item is None:
+                                statuses.append("timeout")
+                                continue
+                            i0, i1, g_ans, st = item
+                            statuses.append(st)
+                            if i0 >= 0 and g_ans:
+                                splices.append((i0, i1, g_ans))
+                        if any(st in ("timeout", "conn_error") for st in statuses):
+                            net_status = "timeout"
+                        elif statuses and all(st == "http_error" for st in statuses):
+                            net_status = "failed"
+                        else:
+                            net_status = "ok"
 
                         if splices:
                             cur_words = [w["w"] for w in words]
@@ -856,34 +1030,40 @@ class ParakeetWorker:
                                 pk_count = i1 - i0 + 1
                                 g_tokens = g_txt.split()
                                 if len(g_tokens) >= max(1, int(pk_count * 0.78)):
+                                    corrections = (
+                                        diff_corrections(cur_words[i0 : i1 + 1], g_tokens) + corrections
+                                    )
                                     cur_words = cur_words[:i0] + g_tokens + cur_words[i1 + 1 :]
                                     groq_assisted = True
                             if groq_assisted:
                                 raw_text = " ".join(cur_words)
                                 engine_used = "Parakeet v3 + Groq"
 
-        final_text = apply_voice_commands_and_smart_formatting(
-            raw_text, enable_commands=enable_commands, enable_smart_formatting=enable_smart
-        )
-        llm_applied = False
-        if llm_mode:
-            final_text, llm_applied = apply_llm_postprocess(
-                final_text, llm_mode, custom_prompt, context=context
-            )
+        return finish(raw_text, duration_sec, engine_used, groq_assisted, net_status, corrections)
 
-        final_text = apply_replacements_and_format(
-            final_text, replacements, autocapitalize
+    def handle_postprocess(self, req: dict) -> dict:
+        """LLM-only pass over an already recognised text (History → «Обробити ШІ»)."""
+        t0 = time.perf_counter()
+        text = str(req.get("text", "")).strip()
+        if not text:
+            raise ValueError("Порожній текст для обробки")
+        net_reset()
+        out, llm_status = apply_llm_postprocess(
+            text,
+            req.get("llm_mode", ""),
+            req.get("custom_prompt", ""),
+            context=None,
+            online=bool(req.get("online", True)),
+            budget_sec=20.0,
         )
-
+        out = apply_replacements_and_format(
+            out, req.get("replacements") or [], bool(req.get("autocapitalize", True))
+        )
         return {
-            "no_voice": False,
-            "text": final_text,
-            "raw_text": raw_text,
-            "duration_sec": duration_sec,
+            "text": out,
+            "llm_status": llm_status,
+            "llm_applied": llm_status == "applied",
             "processing_ms": int((time.perf_counter() - t0) * 1000),
-            "engine_used": engine_used,
-            "groq_assisted": groq_assisted,
-            "llm_applied": llm_applied,
         }
 
     def status(self) -> dict:
@@ -922,6 +1102,8 @@ def main() -> None:
                 res = worker.handle_preview(req)
             elif cmd == "transcribe":
                 res = worker.handle_transcribe(req)
+            elif cmd == "postprocess":
+                res = worker.handle_postprocess(req)
             elif cmd == "quit":
                 sys.stdout.write(json.dumps({"id": req_id, "ok": True}) + "\n")
                 sys.stdout.flush()

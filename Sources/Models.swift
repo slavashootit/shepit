@@ -456,6 +456,13 @@ struct RecordingItem: Identifiable, Equatable {
     var noVoice: Bool
     var fromFile: Bool
     var groqAssisted: Bool
+    /// Inserted without the online double-check (no network at the time)
+    var netPending: Bool = false
+    /// Inserted without AI post-processing although the mode asked for it
+    var llmPending: Bool = false
+
+    static let failedEngineLabel = "Помилка (аудіо збережено)"
+    var isFailedRecognition: Bool { engineUsed == RecordingItem.failedEngineLabel }
 
     var wpm: Int {
         guard durationMs > 400, wordCount > 0 else { return 0 }
