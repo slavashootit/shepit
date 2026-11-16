@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="slavashootit/shepit"
-ZIP_URL="https://github.com/${REPO}/releases/latest/download/Shepit-1.0-AppleSilicon.zip"
+ZIP_URL="https://github.com/${REPO}/releases/latest/download/Shepit-AppleSilicon.zip"
 APP_DEST="/Applications/Шепіт.app"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then

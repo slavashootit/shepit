@@ -14,7 +14,7 @@
 curl -fsSL https://slavashootit.github.io/shepit/install.sh | zsh
 ```
 
-Або завантажте образ **[`Shepit-1.0-AppleSilicon.dmg`](https://github.com/slavashootit/shepit/releases/latest/download/Shepit-1.0-AppleSilicon.dmg)** і перетягніть **«Шепіт»** у теку `Applications`.
+Або завантажте образ **[`Shepit-AppleSilicon.dmg`](https://github.com/slavashootit/shepit/releases/latest/download/Shepit-AppleSilicon.dmg)** і перетягніть **«Шепіт»** у теку `Applications`.
 
 Після першого запуску:
 1. Дозвольте доступ до **Мікрофона** та **Доступності** (`Accessibility` — для миттєвої авто-вставки тексту).

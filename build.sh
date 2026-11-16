@@ -9,7 +9,7 @@ rm -rf "$B"
 mkdir -p "$B"
 
 echo "Компіляція Шепіт (Swift + Apple Silicon)…"
-swiftc -O -swift-version 5 -target arm64-apple-macosx15.0 -parse-as-library \
+swiftc -O -swift-version 5 -target arm64-apple-macosx14.0 -parse-as-library \
   Sources/*.swift \
   -o "$B/Shepit" \
   -framework AppKit \
@@ -54,8 +54,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <key>CFBundleExecutable</key><string>Shepit</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>1.1</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Доступ до мікрофона потрібен для голосового диктування у текст.</string>

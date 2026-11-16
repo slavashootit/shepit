@@ -40,7 +40,15 @@
     ]
   };
 
+  // Offline demo: what the real app inserts when the network is gone — the local text, never the AI version
+  const OFFLINE_RAW = {
+    clean: 'Ну слухай давай мабуть перенесемо дзвінок не на вівторок а на середу об одинадцятій',
+    en: 'Привіт команді я щойно оновив прототип у фігмі подивіться будь ласка'
+  };
+
   let currentMode = 'raw';
+  let offline = false;
+  let noteTimer = null;
   let sampleIdx = 0;
   let isRecording = false;
   let rafId = null;
@@ -55,6 +63,17 @@
   const demoSpeed = document.getElementById('demo-speed');
   const demoSaved = document.getElementById('demo-saved');
   const bars = Array.from(document.querySelectorAll('#waveform span'));
+  const hudNote = document.getElementById('hud-note');
+  const netToggle = document.getElementById('net-toggle');
+
+  function showNote(text, tone) {
+    if (!hudNote) return;
+    clearTimeout(noteTimer);
+    hudNote.textContent = text;
+    hudNote.dataset.tone = tone;
+    hudNote.dataset.show = 'true';
+    noteTimer = setTimeout(() => { hudNote.dataset.show = 'false'; }, tone === 'done' ? 900 : 2200);
+  }
 
   function currentSample() {
     const list = SAMPLES[currentMode] || SAMPLES.raw;
@@ -89,11 +108,16 @@
     const shownCount = Math.max(2, Math.min(words.length, Math.floor(elapsed * 4.5) + 2));
     demoText.textContent = words.slice(0, shownCount).join(' ');
 
+    let sum = 0;
     bars.forEach((bar, i) => {
       const wave = Math.sin(now * 0.011 + i * 0.65) * 0.35 + Math.cos(now * 0.019 - i * 0.4) * 0.25;
       const scale = Math.max(0.18, Math.min(1, 0.48 + wave));
+      sum += scale;
       bar.style.transform = `scaleY(${scale.toFixed(2)})`;
     });
+    // Edge glow breathes with the (simulated) loudness
+    const level = Math.max(0, Math.min(1, (sum / bars.length - 0.3) * 1.8));
+    hudBar.style.setProperty('--level', level.toFixed(2));
 
     rafId = requestAnimationFrame(animateRecording);
   }
@@ -117,10 +141,25 @@
     pttBtn.dataset.active = 'false';
     pttBtn.querySelector('span').textContent = '⌥ Тримати Option';
     timerEl.textContent = '0:00.0';
+    hudBar.style.setProperty('--level', '0');
     resetBars();
 
     const sample = currentSample();
     applySample(sample);
+    if (offline) {
+      if (currentMode === 'raw') {
+        demoLatency.textContent = 'Вставка: 240 мс (Parakeet v3, офлайн)';
+        showNote('Вставлено без онлайн-перевірки', 'neutral');
+      } else {
+        demoText.textContent = OFFLINE_RAW[currentMode] || sample.final;
+        demoLatency.textContent = 'Parakeet v3, офлайн';
+        demoSpeed.textContent = 'ШІ-обробку доробить, коли з’явиться мережа';
+        demoSaved.textContent = 'В історії позначка «офлайн»';
+        showNote('Вставлено без ШІ-обробки', 'neutral');
+      }
+    } else {
+      showNote('✓ Вставлено', 'done');
+    }
     sampleIdx += 1;
   }
 
@@ -150,6 +189,14 @@
   });
 
   window.addEventListener('blur', stopDemoRecording);
+
+  if (netToggle) {
+    netToggle.addEventListener('click', () => {
+      offline = !offline;
+      netToggle.setAttribute('aria-pressed', String(offline));
+      hudBar.dataset.offline = String(offline);
+    });
+  }
 
   document.querySelectorAll('[data-demo-mode]').forEach((btn) => {
     btn.addEventListener('click', () => {

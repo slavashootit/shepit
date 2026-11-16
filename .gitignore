@@ -5,3 +5,6 @@ dist/
 .DS_Store
 __pycache__/
 *.pyc
+
+# Local design reviews: may contain real dictations — never publish
+_design/

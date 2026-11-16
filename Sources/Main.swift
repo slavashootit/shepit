@@ -387,7 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         menu.addItem(.separator())
 
-        let verItem = NSMenuItem(title: "Шепіт 1.0 · Apple Silicon", action: nil, keyEquivalent: "")
+        let verItem = NSMenuItem(title: "Шепіт 1.1 · Apple Silicon", action: nil, keyEquivalent: "")
         verItem.isEnabled = false
         menu.addItem(verItem)
 
