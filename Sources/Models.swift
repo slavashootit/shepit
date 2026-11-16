@@ -427,6 +427,10 @@ struct ShepitSettings: Codable, Equatable {
 
     var didImportSuperwhisper: Bool = false
 
+    // Optional so settings saved by older builds still decode; nil means "on"
+    var autoStopOnSilence: Bool? = nil
+    var autoRedoAfterOffline: Bool? = nil
+
     var activeMode: ShepitMode {
         modes.first(where: { $0.id == activeModeID }) ?? modes.first ?? ShepitMode.defaultModes[0]
     }
@@ -540,4 +544,12 @@ struct WorkerStatusInfo: Equatable {
     var hasGroqKey: Bool = false
     var hasGeminiKey: Bool = false
     var lastError: String = ""
+}
+
+/// A word Groq keeps correcting after the local model — offered as a replacement rule that also works offline.
+struct VocabSuggestion: Identifiable, Equatable {
+    var from: String
+    var to: String
+    var count: Int
+    var id: String { "\(from.lowercased())\t\(to)" }
 }

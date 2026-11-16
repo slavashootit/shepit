@@ -49,6 +49,14 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // UI transient state (avoids SwiftUIMacros dependency on CommandLineTools-only setups)
     @Published var uiShowBaselinePopover: Bool = false
     @Published var uiHoveredDayKey: String? = nil
+    @Published var uiHoveredSection: AppSection? = nil
+    @Published var uiHoveredQuickAction: String? = nil
+    @Published var uiHoveredHistoryID: String? = nil
+    @Published var uiChartAppeared: Bool = false
+    /// Deleted from the list but still restorable for a few seconds
+    @Published var uiPendingDeleteItem: RecordingItem? = nil
+    @Published var uiModePendingDeleteID: String? = nil
+    @Published var vocabSuggestions: [VocabSuggestion] = []
     @Published var uiEditingModeID: String = ""
     @Published var uiNewVocabWord: String = ""
     @Published var uiNewReplFrom: String = ""
@@ -117,9 +125,16 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.isOnline = online
                 self.engine.isOnline = online
                 self.onMenuStateChanged?()
+                if online {
+                    // Give the connection a moment to settle before catching up on offline records
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                        self?.redoOfflineItems()
+                    }
+                }
             }
         }
         NetworkMonitor.shared.start()
+        refreshVocabSuggestions()
 
         permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -136,6 +151,7 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
         recorder.onWaveformUpdate = { [weak self] levels, elapsed in
             Task { @MainActor in
                 self?.hud.updateWaveform(levels: levels, elapsed: elapsed)
+                self?.trackSilence(levels: levels)
             }
         }
 
@@ -339,6 +355,7 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
         do {
             let wavURL = try recorder.startRecording(preferredUID: settings.selectedMicUID)
             activeRecordingURL = wavURL
+            lastVoiceAt = Date()
             sessionPhase = .recording(handsFree: handsFree)
             hotkeyManager.isRecordingActive = true
             hotkeyManager.isHandsFreeLocked = handsFree
@@ -359,6 +376,7 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func lockHandsFree() {
         guard case .recording(let hf) = sessionPhase, !hf else { return }
         sessionPhase = .recording(handsFree: true)
+        lastVoiceAt = Date()
         hotkeyManager.isHandsFreeLocked = true
         hud.updateHandsFree(true)
         onMenuStateChanged?()
@@ -449,6 +467,7 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 }
 
                 let finalText = resp.text
+                self.learnCorrections(resp.corrections)
                 let words = finalText.split(whereSeparator: \.isWhitespace).count
                 let recID = UUID().uuidString
 
@@ -553,6 +572,87 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 )
             }
         }
+    }
+
+    // MARK: - Hands-free auto-stop
+
+    private var lastVoiceAt = Date()
+    private static let silenceLimitSec: TimeInterval = 20
+    /// Waveform level (0…1 after the recorder's boost) above which a slice counts as speech
+    private static let voiceLevelThreshold: CGFloat = 0.2
+
+    /// A forgotten hands-free recording stops itself after a long silence instead of running for an hour.
+    private func trackSilence(levels: [CGFloat]) {
+        guard case .recording(let handsFree) = sessionPhase, handsFree,
+              settings.autoStopOnSilence ?? true else { return }
+        if (levels.suffix(3).max() ?? 0) > Self.voiceLevelThreshold {
+            lastVoiceAt = Date()
+        } else if Date().timeIntervalSince(lastVoiceAt) > Self.silenceLimitSec {
+            lastVoiceAt = Date()
+            stopAndTranscribe()
+        }
+    }
+
+    // MARK: - Catch-up after offline
+
+    /// Records inserted without the online check or the AI step finish those steps once the network is back.
+    /// Only History is updated — nothing is pasted again.
+    func redoOfflineItems() {
+        guard isOnline, sessionPhase == .idle, settings.autoRedoAfterOffline ?? true else { return }
+        let cutoff = Date().addingTimeInterval(-48 * 3600)
+        let pending = storage.fetchHistory(limit: 250)
+            .filter { ($0.netPending || $0.llmPending) && !$0.noVoice && $0.timestamp > cutoff }
+            .prefix(5)
+        for item in pending {
+            let audioExists = !item.audioFile.isEmpty
+                && FileManager.default.fileExists(atPath: storage.resolveAudioURL(item.audioFile).path)
+            if item.netPending && audioExists && workerStatus.hasGroqKey {
+                retranscribeHistoryItem(item, engineChoice: .hybrid, silent: true)
+            } else if item.llmPending {
+                applyAIToHistoryItem(item, silent: true)
+            }
+        }
+    }
+
+    // MARK: - Learning vocabulary
+
+    private static let learnedKey = "learnedCorrections"
+    private static let dismissedKey = "dismissedCorrections"
+    private static let suggestAfter = 3
+
+    private func learnCorrections(_ corrections: [(from: String, to: String)]) {
+        guard !corrections.isEmpty else { return }
+        var counts = (UserDefaults.standard.dictionary(forKey: Self.learnedKey) as? [String: Int]) ?? [:]
+        for c in corrections {
+            counts["\(c.from.lowercased())\t\(c.to)", default: 0] += 1
+        }
+        UserDefaults.standard.set(counts, forKey: Self.learnedKey)
+        refreshVocabSuggestions()
+    }
+
+    func refreshVocabSuggestions() {
+        let counts = (UserDefaults.standard.dictionary(forKey: Self.learnedKey) as? [String: Int]) ?? [:]
+        let dismissed = Set(UserDefaults.standard.stringArray(forKey: Self.dismissedKey) ?? [])
+        let existing = Set(settings.replacements.map { $0.from.lowercased() })
+        vocabSuggestions = counts.compactMap { key, count -> VocabSuggestion? in
+            let parts = key.components(separatedBy: "\t")
+            guard parts.count == 2, count >= Self.suggestAfter,
+                  !dismissed.contains(key), !existing.contains(parts[0]) else { return nil }
+            return VocabSuggestion(from: parts[0], to: parts[1], count: count)
+        }
+        .sorted { $0.count > $1.count }
+    }
+
+    func acceptVocabSuggestion(_ suggestion: VocabSuggestion) {
+        settings.replacements.append(ReplacementRule(from: suggestion.from, to: suggestion.to))
+        refreshVocabSuggestions()
+    }
+
+    func dismissVocabSuggestion(_ suggestion: VocabSuggestion) {
+        var dismissed = UserDefaults.standard.stringArray(forKey: Self.dismissedKey) ?? []
+        dismissed.append(suggestion.id)
+        UserDefaults.standard.set(dismissed, forKey: Self.dismissedKey)
+        refreshVocabSuggestions()
     }
 
     private func startLivePreviewTimer() {
@@ -758,19 +858,47 @@ final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // MARK: - History & Audio Playback
 
     func reloadHistory() {
-        historyItems = storage.fetchHistory(search: historySearch)
+        let pendingID = uiPendingDeleteItem?.id
+        historyItems = storage.fetchHistory(search: historySearch).filter { $0.id != pendingID }
     }
 
     func reloadStats() {
         stats = storage.fetchStats(range: statRange, typingBaselineWPM: settings.typingBaselineWPM)
     }
 
+    private var pendingDeleteWorkItem: DispatchWorkItem?
+
+    /// Hides the record at once but really deletes it only after a grace period, so it can be restored.
     func deleteItem(_ item: RecordingItem) {
         if playingItemID == item.id {
             stopAudioPlayback()
         }
+        commitPendingDelete()
+        uiPendingDeleteItem = item
+        reloadHistory()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self, self.uiPendingDeleteItem?.id == item.id else { return }
+                self.commitPendingDelete()
+            }
+        }
+        pendingDeleteWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: work)
+    }
+
+    func undoDelete() {
+        pendingDeleteWorkItem?.cancel()
+        uiPendingDeleteItem = nil
+        reloadHistory()
+    }
+
+    func commitPendingDelete() {
+        pendingDeleteWorkItem?.cancel()
+        guard let item = uiPendingDeleteItem else { return }
+        uiPendingDeleteItem = nil
         storage.deleteHistoryItem(item)
         reloadHistory()
+        reloadStats()
     }
 
     func togglePlayAudio(for item: RecordingItem) {

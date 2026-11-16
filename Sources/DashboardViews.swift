@@ -22,13 +22,10 @@ struct SectionCard<Content: View>: View {
         content()
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Grouping by surface and air, not by outlines
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.primary.opacity(0.045))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-                    )
+                RoundedRectangle(cornerRadius: Theme.radiusL, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
             )
     }
 }
@@ -71,8 +68,8 @@ struct MainDashboardView: View {
 
                 if let banner = app.statusBannerMessage {
                     HStack(spacing: 10) {
-                        Image(systemName: "info.circle.fill")
-                            .foregroundColor(Color(red: 0.24, green: 0.82, blue: 0.66))
+                        Image(systemName: bannerIsError(banner) ? "exclamationmark.triangle.fill" : "info.circle.fill")
+                            .foregroundColor(bannerIsError(banner) ? Theme.danger : Theme.accent)
                         Text(banner)
                             .font(.system(size: 12.5, weight: .medium))
                         Spacer()
@@ -85,7 +82,7 @@ struct MainDashboardView: View {
                     }
                     .padding(.horizontal, 22)
                     .padding(.vertical, 9)
-                    .background(Color(red: 0.24, green: 0.82, blue: 0.66).opacity(0.10))
+                    .background((bannerIsError(banner) ? Theme.danger : Theme.accent).opacity(0.10))
                 }
 
                 Group {
@@ -119,20 +116,11 @@ struct MainDashboardView: View {
             HStack(spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.20, green: 0.82, blue: 0.68),
-                                    Color(red: 0.34, green: 0.48, blue: 0.98)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
+                        .fill(Theme.accent)
                         .frame(width: 30, height: 30)
                     Image(systemName: "waveform")
                         .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.white)
+                        .foregroundColor(.black.opacity(0.78))
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Шепіт")
@@ -173,12 +161,8 @@ struct MainDashboardView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.radiusM, style: .continuous)
                     .fill(Color.primary.opacity(0.05))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
-                    )
             )
             .padding(.horizontal, 12)
             .padding(.bottom, 14)
@@ -195,38 +179,49 @@ struct MainDashboardView: View {
     }
 
     private var engineDotColor: Color {
-        if !app.workerStatus.lastError.isEmpty { return .orange }
-        if app.workerStatus.isModelLoaded { return Color(red: 0.22, green: 0.86, blue: 0.62) }
+        if !app.workerStatus.lastError.isEmpty { return Theme.warning }
+        if !app.isOnline { return Theme.offline }
+        if app.workerStatus.isModelLoaded { return Theme.accent }
         return .yellow
+    }
+
+    private func bannerIsError(_ text: String) -> Bool {
+        text.hasPrefix("Помилка") || text.contains("недоступний") || text.contains("очищено")
     }
 
     private func sidebarButton(_ sec: AppSection) -> some View {
         let isSelected = app.selectedSection == sec
+        let isHovered = app.uiHoveredSection == sec
+        let index = (AppSection.allCases.firstIndex(of: sec) ?? 0) + 1
         return Button(action: { app.selectedSection = sec }) {
             HStack(spacing: 11) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(nsColor: sec.badgeTint))
-                        .frame(width: 22, height: 22)
-                    Image(systemName: sec.icon)
-                        .font(.system(size: 11.5, weight: .bold))
-                        .foregroundColor(.white)
-                }
+                // One accent for the whole app: the icon lights up only for the current section
+                Image(systemName: sec.icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(isSelected ? Theme.accent : .secondary)
+                    .frame(width: 22, height: 22)
                 Text(sec.title)
-                    .font(.system(size: 13.5, weight: isSelected ? .semibold : .regular))
+                    .font(Theme.font(13.5, strong: isSelected))
                     .foregroundColor(isSelected ? .primary : .primary.opacity(0.82))
                 Spacer()
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(isSelected ? Color.primary.opacity(0.11) : Color.clear)
+                RoundedRectangle(cornerRadius: Theme.radiusS + 2, style: .continuous)
+                    .fill(Color.primary.opacity(isSelected ? 0.10 : (isHovered ? 0.05 : 0)))
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 10)
+        .onHover { inside in
+            if inside { app.uiHoveredSection = sec } else if app.uiHoveredSection == sec { app.uiHoveredSection = nil }
+        }
+        .keyboardShortcut(KeyEquivalent(Character("\(index)")), modifiers: .command)
+        .help("\(sec.title)  ⌘\(index)")
+        .accessibilityLabel(sec.title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: - Top Bar (Quick Mic Picker & Record Button)
@@ -242,7 +237,7 @@ struct MainDashboardView: View {
             Button(action: { app.toggleRecordingFromMenuOrButton() }) {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(isRecording ? Color.red : Color(red: 0.22, green: 0.84, blue: 0.64))
+                        .fill(isRecording ? Color.red : Theme.accent)
                         .frame(width: 7, height: 7)
                     Text(recordButtonLabel)
                         .font(.system(size: 12, weight: .semibold))
@@ -351,7 +346,7 @@ struct HomeSectionView: View {
                         statMetricColumn(
                             value: "\(app.stats.averageWPM) слів/хв",
                             label: "Середня швидкість",
-                            detail: "Загалом наговорено: \(app.stats.formattedDuration)"
+                            detail: "Наговорено \(app.stats.formattedDuration)"
                         )
                         Divider().frame(height: 54).opacity(0.35)
                         statMetricColumn(
@@ -362,14 +357,16 @@ struct HomeSectionView: View {
                         Divider().frame(height: 54).opacity(0.35)
                         statMetricColumn(
                             value: "\(app.stats.appsUsedCount)",
-                            label: "Програм використано",
+                            label: "Програм",
                             detail: app.stats.peakHour.map { String(format: "Пік о %02d:00", $0) } ?? "Усі робочі вікна"
                         )
                         Divider().frame(height: 54).opacity(0.35)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(app.stats.formattedSavedTime)
-                                .font(.system(size: 22, weight: .bold, design: .rounded).monospacedDigit())
-                                .foregroundColor(Color(red: 0.24, green: 0.86, blue: 0.66))
+                                .font(Theme.digits(22))
+                                .foregroundColor(Theme.accent)
+                                .contentTransition(.numericText())
+                                .animation(Theme.spring, value: app.stats.formattedSavedTime)
                             HStack(spacing: 4) {
                                 Text("Зекономлений час")
                                     .font(.system(size: 12.5, weight: .medium))
@@ -424,7 +421,6 @@ struct HomeSectionView: View {
                                     .foregroundColor(.secondary)
                             }
                             DailyActivityChart(app: app, series: app.stats.dailySeries)
-                                .frame(height: 132)
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -457,16 +453,7 @@ struct HomeSectionView: View {
                                                 Capsule()
                                                     .fill(Color.primary.opacity(0.08))
                                                 Capsule()
-                                                    .fill(
-                                                        LinearGradient(
-                                                            colors: [
-                                                                Color(red: 0.22, green: 0.84, blue: 0.66),
-                                                                Color(red: 0.34, green: 0.54, blue: 0.98)
-                                                            ],
-                                                            startPoint: .leading,
-                                                            endPoint: .trailing
-                                                        )
-                                                    )
+                                                    .fill(Theme.accent.opacity(0.85))
                                                     .frame(width: max(6, geo.size.width * CGFloat(item.words) / CGFloat(maxWords)))
                                             }
                                         }
@@ -565,7 +552,11 @@ struct HomeSectionView: View {
     private func statMetricColumn(value: String, label: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(value)
-                .font(.system(size: 22, weight: .bold, design: .rounded).monospacedDigit())
+                .font(Theme.digits(22))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .contentTransition(.numericText())
+                .animation(Theme.spring, value: value)
             Text(label)
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundColor(.secondary)
@@ -607,9 +598,16 @@ struct HomeSectionView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radiusM, style: .continuous)
+                    .fill(Color.primary.opacity(app.uiHoveredQuickAction == title ? 0.06 : 0))
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { app.uiHoveredQuickAction = title } else if app.uiHoveredQuickAction == title { app.uiHoveredQuickAction = nil }
+        }
     }
 }
 
@@ -617,61 +615,68 @@ struct DailyActivityChart: View {
     @ObservedObject var app: AppState
     let series: [DailyWordStat]
 
+    private let plotHeight: CGFloat = 92
+
     var body: some View {
         let maxW = max(10, series.map(\.words).max() ?? 10)
-        VStack(spacing: 6) {
-            HStack(alignment: .bottom, spacing: 6) {
-                ForEach(series) { day in
-                    let ratio = CGFloat(day.words) / CGFloat(maxW)
-                    let isHovered = app.uiHoveredDayKey == day.dateKey
-                    VStack(spacing: 4) {
-                        Spacer(minLength: 0)
-                        if isHovered && day.words > 0 {
-                            Text("\(Fmt.number(day.words))")
-                                .font(.system(size: 9.5, weight: .bold).monospacedDigit())
+        VStack(spacing: 5) {
+            ZStack(alignment: .topLeading) {
+                // Scale reference: the busiest day sets the top line
+                VStack(spacing: 0) {
+                    HStack(spacing: 6) {
+                        Text("\(Fmt.number(maxW))")
+                            .font(Theme.digits(9.5, strong: false))
+                            .foregroundColor(.secondary.opacity(0.8))
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.08))
+                            .frame(height: 1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(height: plotHeight + 16)
+
+                HStack(alignment: .bottom, spacing: 6) {
+                    ForEach(series) { day in
+                        let ratio = CGFloat(day.words) / CGFloat(maxW)
+                        let isHovered = app.uiHoveredDayKey == day.dateKey
+                        let grown = app.uiChartAppeared || Theme.reduceMotion
+                        VStack(spacing: 3) {
+                            Spacer(minLength: 0)
+                            Text(isHovered && day.words > 0 ? Fmt.number(day.words) : " ")
+                                .font(Theme.digits(9.5))
                                 .foregroundColor(.primary)
                                 .fixedSize()
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(day.words > 0
+                                      ? Theme.accent.opacity(isHovered ? 1 : 0.82)
+                                      : Color.primary.opacity(0.08))
+                                .frame(height: max(4, (grown ? ratio : 0) * plotHeight))
                         }
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(
-                                day.words > 0
-                                    ? LinearGradient(
-                                        colors: [
-                                            Color(red: 0.24, green: 0.86, blue: 0.68),
-                                            Color(red: 0.28, green: 0.56, blue: 0.96)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                    : LinearGradient(
-                                        colors: [Color.primary.opacity(0.08), Color.primary.opacity(0.08)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                            )
-                            .frame(height: max(5, ratio * 94))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: plotHeight + 16, alignment: .bottom)
+                        .contentShape(Rectangle())
+                        .onHover { inside in
+                            app.uiHoveredDayKey = inside ? day.dateKey : nil
+                        }
+                        .help("\(day.label): \(Fmt.number(day.words)) слів (\(day.count) зап.)")
+                        .accessibilityLabel("\(day.label): \(day.words) слів")
                     }
-                    .frame(maxWidth: .infinity)
-                    .onHover { inside in
-                        app.uiHoveredDayKey = inside ? day.dateKey : nil
-                    }
-                    .help("\(day.label): \(Fmt.number(day.words)) слів (\(day.count) зап.)")
                 }
             }
-            HStack {
-                if let first = series.first {
-                    Text(first.label)
-                        .font(.system(size: 10.5))
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                if let last = series.last {
-                    Text("Сьогодні (\(last.label))")
-                        .font(.system(size: 10.5))
-                        .foregroundColor(.secondary)
+            // Day-of-month under every bar, so a bar can be read without hovering
+            HStack(alignment: .top, spacing: 6) {
+                ForEach(series) { day in
+                    Text(day.label.split(separator: " ").first.map(String.init) ?? "")
+                        .font(Theme.digits(9.5, strong: false))
+                        .foregroundColor(day.dateKey == series.last?.dateKey ? .primary : .secondary.opacity(0.8))
+                        .frame(maxWidth: .infinity)
                 }
             }
         }
+        .onAppear {
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.82)) { app.uiChartAppeared = true }
+        }
+        .onDisappear { app.uiChartAppeared = false }
     }
 }
 
@@ -702,8 +707,8 @@ struct ModesSectionView: View {
                     .buttonStyle(.bordered)
                 }
 
-                // Mode Cards Selector
-                HStack(spacing: 12) {
+                // Mode Cards Selector — a grid, so six modes keep readable names instead of squeezing into one row
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 12)], spacing: 12) {
                     ForEach(app.settings.modes) { m in
                         let isActive = app.settings.activeModeID == m.id
                         let isEditing = app.settings.modes[selectedIndex].id == m.id
@@ -715,15 +720,15 @@ struct ModesSectionView: View {
                                 HStack {
                                     Image(systemName: m.icon)
                                         .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(isActive ? Color(red: 0.22, green: 0.86, blue: 0.66) : .secondary)
+                                        .foregroundColor(isActive ? Theme.accent : .secondary)
                                     Spacer()
                                     if isActive {
                                         Text("Активний")
                                             .font(.system(size: 10, weight: .bold))
-                                            .foregroundColor(Color(red: 0.22, green: 0.86, blue: 0.66))
+                                            .foregroundColor(Theme.accent)
                                             .padding(.horizontal, 7)
                                             .padding(.vertical, 2)
-                                            .background(Capsule().fill(Color(red: 0.22, green: 0.86, blue: 0.66).opacity(0.15)))
+                                            .background(Capsule().fill(Theme.accent.opacity(0.15)))
                                     }
                                 }
                                 Text(m.name)
@@ -738,18 +743,17 @@ struct ModesSectionView: View {
                             .padding(13)
                             .frame(maxWidth: .infinity, minHeight: 94, alignment: .topLeading)
                             .background(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(Color.primary.opacity(isEditing ? 0.08 : 0.04))
+                                RoundedRectangle(cornerRadius: Theme.radiusM, style: .continuous)
+                                    .fill(Color.primary.opacity(isEditing ? 0.08 : 0.045))
                                     .overlay(
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .strokeBorder(
-                                                isEditing ? Color(red: 0.24, green: 0.84, blue: 0.66).opacity(0.75) : Color.primary.opacity(0.09),
-                                                lineWidth: isEditing ? 1.5 : 1
-                                            )
+                                        RoundedRectangle(cornerRadius: Theme.radiusM, style: .continuous)
+                                            .strokeBorder(isEditing ? Theme.accent.opacity(0.75) : Color.clear, lineWidth: 1.5)
                                     )
                             )
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Режим \(m.name)\(isActive ? ", активний" : "")")
                     }
                 }
 
@@ -767,16 +771,27 @@ struct ModesSectionView: View {
                                     .font(.system(size: 14, weight: .bold))
                                 Spacer()
                                 if app.settings.modes.count > 1 && !["voice-to-text", "clean-thought", "translate-en"].contains(modeBinding.wrappedValue.id) {
+                                    // Two-step delete: the first click only arms the button for a few seconds
+                                    let armed = app.uiModePendingDeleteID == modeBinding.wrappedValue.id
                                     Button(role: .destructive) {
                                         let idToRemove = modeBinding.wrappedValue.id
+                                        guard armed else {
+                                            app.uiModePendingDeleteID = idToRemove
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+                                                if app.uiModePendingDeleteID == idToRemove { app.uiModePendingDeleteID = nil }
+                                            }
+                                            return
+                                        }
+                                        app.uiModePendingDeleteID = nil
                                         app.settings.modes.removeAll { $0.id == idToRemove }
                                         if app.settings.activeModeID == idToRemove {
                                             app.settings.activeModeID = app.settings.modes.first?.id ?? "voice-to-text"
                                         }
                                         app.uiEditingModeID = app.settings.activeModeID
                                     } label: {
-                                        Label("Видалити", systemImage: "trash")
-                                            .font(.system(size: 12))
+                                        Label(armed ? "Точно видалити?" : "Видалити", systemImage: "trash")
+                                            .font(.system(size: 12, weight: armed ? .semibold : .regular))
+                                            .foregroundColor(armed ? Theme.danger : nil)
                                     }
                                     .buttonStyle(.borderless)
                                 }
@@ -891,6 +906,35 @@ struct VocabularySectionView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if !app.vocabSuggestions.isEmpty {
+                    SectionCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("«Шепіт» помітив повторювані виправлення")
+                                .font(.system(size: 14.5, weight: .bold))
+                            Text("Ці слова онлайн-перевірка щоразу виправляє після локальної моделі. Додайте заміну — і вони будуть правильними навіть без інтернету.")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                            ForEach(app.vocabSuggestions) { suggestion in
+                                HStack(spacing: 10) {
+                                    Text("«\(suggestion.from)» → «\(suggestion.to)»")
+                                        .font(Theme.font(13, strong: true))
+                                    Text("\(suggestion.count) рази")
+                                        .font(Theme.digits(11, strong: false))
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Button("Додати заміну") { app.acceptVocabSuggestion(suggestion) }
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(Theme.accent)
+                                        .controlSize(.small)
+                                    Button("Не треба") { app.dismissVocabSuggestion(suggestion) }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Custom Vocabulary Words
                 SectionCard {
                     VStack(alignment: .leading, spacing: 12) {
@@ -951,7 +995,7 @@ struct VocabularySectionView: View {
                                         .foregroundColor(.secondary)
                                     Text(rule.to)
                                         .font(.system(size: 13, weight: .semibold))
-                                        .foregroundColor(Color(red: 0.24, green: 0.86, blue: 0.66))
+                                        .foregroundColor(Theme.accent)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                     Button(action: {
                                         let id = rule.id

@@ -30,7 +30,7 @@ struct ConfigurationSectionView: View {
 
                             Divider().opacity(0.25)
 
-                            HStack(alignment: .center) {
+                            VStack(alignment: .leading, spacing: 12) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Вікно індикатора запису")
                                         .font(.system(size: 13.5, weight: .medium))
@@ -38,8 +38,8 @@ struct ConfigurationSectionView: View {
                                         .font(.system(size: 11.5))
                                         .foregroundColor(.secondary)
                                 }
-                                Spacer()
-                                HStack(spacing: 10) {
+                                // Own row: four equal cards never squeeze their captions
+                                HStack(spacing: 12) {
                                     ForEach(RecordingWindowStyle.allCases) { st in
                                         hudStyleCard(st)
                                     }
@@ -211,6 +211,36 @@ struct ConfigurationSectionView: View {
                                         .foregroundColor(.secondary)
                                 }
                             }
+
+                            Divider().opacity(0.25)
+
+                            Toggle(isOn: Binding(
+                                get: { app.settings.autoStopOnSilence ?? true },
+                                set: { app.settings.autoStopOnSilence = $0 }
+                            )) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Зупиняти запис «без рук» після 20 с тиші")
+                                        .font(.system(size: 13.5, weight: .medium))
+                                    Text("Забутий запис сам завершиться й вставить текст, а не писатиме годину")
+                                        .font(.system(size: 11.5))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
+                            Divider().opacity(0.25)
+
+                            Toggle(isOn: Binding(
+                                get: { app.settings.autoRedoAfterOffline ?? true },
+                                set: { app.settings.autoRedoAfterOffline = $0 }
+                            )) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Доробляти офлайн-записи, коли з'явиться інтернет")
+                                        .font(.system(size: 13.5, weight: .medium))
+                                    Text("Онлайн-перевірка й ШІ-обробка доганяють самі; оновлюється лише Історія, нічого не вставляється повторно")
+                                        .font(.system(size: 11.5))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
                         }
                     }
                 }
@@ -226,11 +256,12 @@ struct ConfigurationSectionView: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
                         .fill(Color.black.opacity(0.45))
-                        .frame(width: 92, height: 42)
+                        .frame(height: 46)
+                        .frame(maxWidth: .infinity)
                         .overlay(
                             RoundedRectangle(cornerRadius: 9, style: .continuous)
                                 .strokeBorder(
-                                    selected ? Color(red: 0.24, green: 0.84, blue: 0.66) : Color.primary.opacity(0.14),
+                                    selected ? Theme.accent : Color.primary.opacity(0.14),
                                     lineWidth: selected ? 1.8 : 1
                                 )
                         )
@@ -256,7 +287,7 @@ struct ConfigurationSectionView: View {
                     case .notch:
                         // Notch-style preview: centered pill with bars and glow dot
                         HStack(spacing: 2) {
-                            Circle().fill(Color(red: 0.24, green: 0.86, blue: 0.66)).frame(width: 4, height: 4)
+                            Circle().fill(Theme.accent).frame(width: 4, height: 4)
                             ForEach([0.5, 0.8, 0.5], id: \.self) { h in
                                 Capsule().fill(Color.white.opacity(0.85)).frame(width: 2, height: CGFloat(h * 10))
                             }
@@ -273,9 +304,15 @@ struct ConfigurationSectionView: View {
                 Text(style.title)
                     .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
                     .foregroundColor(selected ? .primary : .secondary)
+                    .lineLimit(1)
+                    .fixedSize()
             }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Вигляд індикатора: \(style.title)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func shortcutRow(
@@ -314,12 +351,12 @@ struct ConfigurationSectionView: View {
                 if isCapturing {
                     Text("Натисніть клавішу…")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Color(red: 0.24, green: 0.86, blue: 0.66))
+                        .foregroundColor(Theme.accent)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
                         .background(
                             RoundedRectangle(cornerRadius: 7)
-                                .strokeBorder(Color(red: 0.24, green: 0.86, blue: 0.66), lineWidth: 1.2)
+                                .strokeBorder(Theme.accent, lineWidth: 1.2)
                         )
                 } else {
                     HStack(spacing: 4) {
@@ -337,7 +374,7 @@ struct ConfigurationSectionView: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(granted ? Color(red: 0.22, green: 0.84, blue: 0.60) : Color.orange)
+                    .fill(granted ? Theme.accent : Color.orange)
                     .frame(width: 8, height: 8)
                 Text(title)
                     .font(.system(size: 12, weight: .medium))
@@ -534,11 +571,11 @@ struct ModelsSectionView: View {
                     HStack(alignment: .top, spacing: 14) {
                         ZStack {
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color(red: 0.22, green: 0.84, blue: 0.62).opacity(0.18))
+                                .fill(Theme.accent.opacity(0.18))
                                 .frame(width: 42, height: 42)
                             Image(systemName: "cpu.fill")
                                 .font(.system(size: 19, weight: .semibold))
-                                .foregroundColor(Color(red: 0.22, green: 0.84, blue: 0.62))
+                                .foregroundColor(Theme.accent)
                         }
 
                         VStack(alignment: .leading, spacing: 7) {
@@ -561,7 +598,7 @@ struct ModelsSectionView: View {
                                         .progressViewStyle(.linear)
                                     Text(app.modelInstallStage)
                                         .font(.system(size: 11.5, weight: .medium).monospacedDigit())
-                                        .foregroundColor(Color(red: 0.24, green: 0.86, blue: 0.66))
+                                        .foregroundColor(Theme.accent)
                                 }
                                 .padding(.top, 4)
                             } else if !app.workerStatus.modelExists {
@@ -677,7 +714,7 @@ struct ModelsSectionView: View {
 
                         VStack(alignment: .leading, spacing: 7) {
                             HStack(spacing: 8) {
-                                Text("Llama 3.3 70B (Groq) + Gemini 2.5 Flash")
+                                Text("ШІ-обробка: Qwen 3.8 (Groq) + Gemini Flash Lite")
                                     .font(.system(size: 14.5, weight: .bold))
                                 statusBadge(
                                     ok: app.workerStatus.hasGroqKey || app.workerStatus.hasGeminiKey,
@@ -745,11 +782,11 @@ struct ModelsSectionView: View {
     private func statusBadge(ok: Bool, okText: String, waitText: String) -> some View {
         Text(ok ? okText : waitText)
             .font(.system(size: 10.5, weight: .bold))
-            .foregroundColor(ok ? Color(red: 0.22, green: 0.86, blue: 0.62) : .orange)
+            .foregroundColor(ok ? Theme.accent : .orange)
             .padding(.horizontal, 8)
             .padding(.vertical, 2.5)
             .background(
-                Capsule().fill((ok ? Color(red: 0.22, green: 0.86, blue: 0.62) : Color.orange).opacity(0.15))
+                Capsule().fill((ok ? Theme.accent : Color.orange).opacity(0.15))
             )
     }
 }
@@ -820,14 +857,28 @@ struct HistorySectionView: View {
             if app.historyItems.isEmpty {
                 VStack(spacing: 10) {
                     Spacer()
-                    Image(systemName: "waveform.and.mic")
-                        .font(.system(size: 34))
-                        .foregroundColor(.secondary.opacity(0.5))
-                    Text(app.historySearch.isEmpty ? "Історія записів поки порожня" : "Нічого не знайдено")
-                        .font(.system(size: 14.5, weight: .semibold))
-                    Text("Натисніть правий Option і скажіть фразу, або перетягніть сюди аудіо/відео файл.")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
+                    if app.historySearch.isEmpty {
+                        Image(systemName: "waveform.and.mic")
+                            .font(.system(size: 34))
+                            .foregroundColor(.secondary.opacity(0.5))
+                        Text("Історія записів поки порожня")
+                            .font(.system(size: 14.5, weight: .semibold))
+                        Text("Затисніть \(app.settings.pushToTalkShortcut.displayTokens.joined(separator: " ")) і скажіть фразу — або перетягніть сюди аудіо чи відео.")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    } else {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 30))
+                            .foregroundColor(.secondary.opacity(0.5))
+                        Text("Нічого не знайдено за «\(app.historySearch)»")
+                            .font(.system(size: 14.5, weight: .semibold))
+                        Text("Спробуйте інше слово або назву програми.")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                        Button("Очистити пошук") { app.historySearch = "" }
+                            .buttonStyle(.bordered)
+                            .padding(.top, 4)
+                    }
                     Spacer()
                 }
             } else {
@@ -850,12 +901,37 @@ struct HistorySectionView: View {
                 }
             }
         }
+        .overlay(alignment: .bottom) {
+            if app.uiPendingDeleteItem != nil {
+                HStack(spacing: 12) {
+                    Image(systemName: "trash")
+                        .foregroundColor(.secondary)
+                    Text("Запис видалено")
+                        .font(Theme.font(12.5, strong: true))
+                    Button("Повернути") { app.undoDelete() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                        .controlSize(.small)
+                        .keyboardShortcut("z", modifiers: .command)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color(nsColor: .windowBackgroundColor))
+                        .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
+                )
+                .padding(.bottom, 18)
+                .transition(.opacity.combined(with: .offset(y: 10)))
+            }
+        }
+        .animation(Theme.spring, value: app.uiPendingDeleteItem?.id)
         .overlay(
             Group {
                 if app.uiIsDropTargeted {
                     RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(Color(red: 0.24, green: 0.86, blue: 0.66), style: StrokeStyle(lineWidth: 2, dash: [8]))
-                        .background(Color(red: 0.24, green: 0.86, blue: 0.66).opacity(0.08))
+                        .strokeBorder(Theme.accent, style: StrokeStyle(lineWidth: 2, dash: [8]))
+                        .background(Theme.accent.opacity(0.08))
                         .padding(12)
                 }
             }
@@ -920,6 +996,9 @@ struct HistorySectionView: View {
         let isCopied = app.uiCopiedItemID == item.id
         let isPlaying = app.playingItemID == item.id
         let hasAudio = !item.audioFile.isEmpty && FileManager.default.fileExists(atPath: app.storage.resolveAudioURL(item.audioFile).path)
+        let isHovered = app.uiHoveredHistoryID == item.id
+        // Actions stay quiet until the row is pointed at (or is doing something)
+        let actionsOpacity: Double = (isHovered || isPlaying || isCopied || item.isFailedRecognition) ? 1 : 0.3
 
         return VStack(alignment: .leading, spacing: 9) {
             if item.noVoice {
@@ -965,11 +1044,12 @@ struct HistorySectionView: View {
 
                 Spacer()
 
+                Group {
                 if hasAudio {
                     Button(action: { app.togglePlayAudio(for: item) }) {
                         Image(systemName: isPlaying ? "stop.circle.fill" : "play.circle")
                             .font(.system(size: 14))
-                            .foregroundColor(isPlaying ? Color(red: 0.24, green: 0.86, blue: 0.66) : .secondary)
+                            .foregroundColor(isPlaying ? Theme.accent : .secondary)
                     }
                     .buttonStyle(.plain)
                     .help(isPlaying ? "Зупинити відтворення" : "Прослухати запис")
@@ -1021,7 +1101,7 @@ struct HistorySectionView: View {
                                     .font(.system(size: 11, weight: .semibold))
                             }
                         }
-                        .foregroundColor(isCopied ? Color(red: 0.24, green: 0.86, blue: 0.66) : .secondary)
+                        .foregroundColor(isCopied ? Theme.accent : .secondary)
                     }
                     .buttonStyle(.plain)
                     .help("Скопіювати текст у буфер обміну")
@@ -1033,18 +1113,21 @@ struct HistorySectionView: View {
                         .foregroundColor(.secondary.opacity(0.75))
                 }
                 .buttonStyle(.plain)
-                .help("Видалити запис")
+                .help("Видалити запис (можна повернути протягом 5 с)")
+                .accessibilityLabel("Видалити запис")
+                }
+                .opacity(actionsOpacity)
             }
         }
         .padding(.horizontal, 15)
         .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.045))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.075), lineWidth: 1)
-                )
+            RoundedRectangle(cornerRadius: Theme.radiusM, style: .continuous)
+                .fill(Color.primary.opacity(isHovered ? 0.07 : 0.045))
         )
+        .onHover { inside in
+            if inside { app.uiHoveredHistoryID = item.id } else if app.uiHoveredHistoryID == item.id { app.uiHoveredHistoryID = nil }
+        }
+        .animation(.easeOut(duration: 0.12), value: isHovered)
     }
 }
