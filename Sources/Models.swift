@@ -544,6 +544,8 @@ struct WorkerStatusInfo: Equatable {
     var hasGroqKey: Bool = false
     var hasGeminiKey: Bool = false
     var lastError: String = ""
+    /// Models a provider answered "gone" for: model id → provider.
+    var goneModels: [String: String] = [:]
 }
 
 /// A word Groq keeps correcting after the local model — offered as a replacement rule that also works offline.

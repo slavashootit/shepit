@@ -429,6 +429,12 @@ final class TranscriptionEngine {
                 continue
             }
 
+            if let gone = obj["gone_models"] as? [String: String], gone != currentStatus.goneModels {
+                currentStatus.goneModels = gone
+                let snapshot = currentStatus
+                DispatchQueue.main.async { [weak self] in self?.onStatusUpdate?(snapshot) }
+            }
+
             guard let reqID = obj["id"] as? String,
                   let cb = pendingCallbacks.removeValue(forKey: reqID) else {
                 continue
@@ -454,6 +460,7 @@ final class TranscriptionEngine {
         currentStatus.activeMemoryMB = (dict["active_memory_mb"] as? Double) ?? currentStatus.activeMemoryMB
         currentStatus.hasGroqKey = (dict["has_groq_key"] as? Bool) ?? currentStatus.hasGroqKey
         currentStatus.hasGeminiKey = (dict["has_gemini_key"] as? Bool) ?? currentStatus.hasGeminiKey
+        if let gone = dict["gone_models"] as? [String: String] { currentStatus.goneModels = gone }
         let snapshot = currentStatus
         DispatchQueue.main.async { [weak self] in
             self?.onStatusUpdate?(snapshot)

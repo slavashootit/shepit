@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class AppState: NSObject, ObservableObject, AVAudioPlayerDelegate {
     static let shared = AppState()
+    let updater = Updater(.init(repo: "slavashootit/shepit", bundleID: "ua.slava.shepit", assetSuffix: ".zip"))
     static var snapshotMode = false
 
     enum SessionPhase: Equatable {

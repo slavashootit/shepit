@@ -117,7 +117,18 @@ def net_reset() -> None:
     _net_down_until = 0.0
 
 
-def net_call(fn, budget_sec: float):
+# Models a provider answered "gone" for (404, decommissioned, not found): {model_id: provider}.
+# Sent to the app with every answer so a retired model shows up on screen instead of failing silently.
+GONE_MODELS: dict[str, str] = {}
+
+
+def _is_gone(code: int, body: str) -> bool:
+    low = body.lower()
+    return code == 404 or (code in (400, 403) and any(
+        w in low for w in ("decommission", "model_not_found", "does not exist", "not found", "no longer supported", "deprecated")))
+
+
+def net_call(fn, budget_sec: float, model: str = "", provider: str = ""):
     """Runs fn() in a daemon thread with a hard total deadline.
     Returns (value, status); status is ok | timeout | conn_error | http_error.
     urllib's own timeout is per socket operation and does not cover DNS, so it cannot be trusted alone."""
@@ -130,6 +141,13 @@ def net_call(fn, budget_sec: float):
         except urllib.error.HTTPError as exc:
             box["status"] = "http_error"
             box["error"] = f"HTTP {exc.code}"
+            try:
+                body = exc.read().decode("utf-8", "replace")[:600]
+            except Exception:
+                body = ""
+            if model and _is_gone(exc.code, body):
+                GONE_MODELS[model] = provider
+                log(f"Model {model} ({provider}) looks retired: HTTP {exc.code} {body[:200]}")
         except Exception as exc:  # URLError, socket timeout, DNS failure, bad payload
             box["status"] = "conn_error"
             box["error"] = str(exc)
@@ -147,6 +165,8 @@ def net_call(fn, budget_sec: float):
         log(f"Network unreachable ({box.get('error', '')}), pausing network for {NET_COOLDOWN_SEC:.0f}s")
     elif status == "http_error":
         log(f"Network call failed: {box.get('error', '')}")
+    if status == "ok" and model:
+        GONE_MODELS.pop(model, None)
     return box.get("value"), status
 
 
@@ -453,7 +473,7 @@ def call_groq_whisper(
             payload = json.loads(resp.read().decode("utf-8"))
             return payload.get("text", "").strip()
 
-    txt, status = net_call(do_request, timeout_sec)
+    txt, status = net_call(do_request, timeout_sec, "whisper-large-v3", "Groq")
     if status != "ok":
         return None, status
     if txt and not is_hallucination(txt):
@@ -656,7 +676,7 @@ def apply_llm_postprocess(
                     data = json.loads(resp.read().decode("utf-8"))
                     return (data["choices"][0]["message"].get("content") or "").strip()
 
-            out, status = net_call(groq_request, groq_budget)
+            out, status = net_call(groq_request, groq_budget, model_id, "Groq")
             if status == "ok" and out:
                 return finalize_llm_output(text, out, llm_mode)
             if status in ("timeout", "conn_error"):
@@ -689,7 +709,7 @@ def apply_llm_postprocess(
                     data = json.loads(resp.read().decode("utf-8"))
                     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-            out, status = net_call(gemini_request, remaining)
+            out, status = net_call(gemini_request, remaining, model_id, "Gemini")
             if status == "ok" and out:
                 return finalize_llm_output(text, out, llm_mode)
             if status in ("timeout", "conn_error"):
@@ -1120,6 +1140,7 @@ class ParakeetWorker:
             "active_memory_mb": active_mb,
             "has_groq_key": bool(read_key("groq", "GROQ_API_KEY")),
             "has_gemini_key": bool(read_key("gemini", "GEMINI_API_KEY")),
+            "gone_models": GONE_MODELS,
         }
 
 
@@ -1154,7 +1175,7 @@ def main() -> None:
                 break
             else:
                 raise ValueError(f"Unknown command: {cmd}")
-            out = {"id": req_id, "ok": True, "result": res}
+            out = {"id": req_id, "ok": True, "result": res, "gone_models": GONE_MODELS}
         except Exception as exc:
             log(f"Error handling cmd: {traceback.format_exc()}")
             out = {"id": req_id, "ok": False, "error": str(exc)}

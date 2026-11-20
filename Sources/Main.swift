@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 // MARK: - Vector App Icon Renderer (1024x1024 macOS Squircle)
 
@@ -222,8 +223,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.showMainWindow()
         }
 
+        app.updater.beforeRelaunch = {
+            app.hotkeyManager.stop()
+            app.engine.shutdown()
+        }
+        updaterObserver = app.updater.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.rebuildStatusMenu() }
+        }
+        app.updater.start()
+
         showMainWindow()
     }
+
+    private var updaterObserver: AnyCancellable?
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showMainWindow()
@@ -387,7 +399,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         menu.addItem(.separator())
 
-        let verItem = NSMenuItem(title: "Шепіт 1.1.1 · Apple Silicon", action: nil, keyEquivalent: "")
+        let updater = app.updater
+        if let release = updater.available {
+            let title: String
+            if case .installing(let text) = updater.phase { title = text } else { title = "Оновити до \(release.version)" }
+            let upItem = NSMenuItem(title: "⬆︎ Є оновлення · \(title)", action: #selector(menuInstallUpdate), keyEquivalent: "")
+            upItem.target = self
+            menu.addItem(upItem)
+        } else {
+            let checkItem = NSMenuItem(title: updater.phase == .checking ? "Перевіряю оновлення…" : "Перевірити оновлення",
+                                       action: #selector(menuCheckUpdates), keyEquivalent: "")
+            checkItem.target = self
+            menu.addItem(checkItem)
+        }
+
+        let verItem = NSMenuItem(title: "Шепіт \(Updater.current) · Apple Silicon", action: nil, keyEquivalent: "")
         verItem.isEnabled = false
         menu.addItem(verItem)
 
@@ -460,6 +486,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     // MARK: - Menu Actions
+
+    @objc private func menuInstallUpdate() {
+        AppState.shared.updater.install()
+    }
+
+    @objc private func menuCheckUpdates() {
+        Task { await AppState.shared.updater.check() }
+    }
 
     @objc private func menuToggleRecording() {
         AppState.shared.toggleRecordingFromMenuOrButton()

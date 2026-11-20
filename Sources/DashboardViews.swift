@@ -66,6 +66,9 @@ struct MainDashboardView: View {
                 topBar
                 Divider().opacity(0.25)
 
+                UpdateBannerView(updater: app.updater)
+                GoneModelsBannerView(gone: app.workerStatus.goneModels)
+
                 if let banner = app.statusBannerMessage {
                     HStack(spacing: 10) {
                         Image(systemName: bannerIsError(banner) ? "exclamationmark.triangle.fill" : "info.circle.fill")
@@ -1067,5 +1070,84 @@ struct FlowWrapChips: View {
                 )
             }
         }
+    }
+}
+
+
+// MARK: - Update and retired-model banners
+
+/// "Є оновлення" with a one-click install; silent when the app is up to date.
+struct UpdateBannerView: View {
+    @ObservedObject var updater: Updater
+
+    var body: some View {
+        if let release = updater.available {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundColor(Theme.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Є оновлення: Шепіт \(release.version)")
+                        .font(.system(size: 12.5, weight: .semibold))
+                    Text(subtitle)
+                        .font(.system(size: 11.5))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Button("Що нового") { NSWorkspace.shared.open(release.page) }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
+                Button(action: { updater.install() }) {
+                    Text(isInstalling ? "Оновлюю…" : "Оновити")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(isInstalling)
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 9)
+            .background(Theme.accent.opacity(0.10))
+        }
+    }
+
+    private var isInstalling: Bool {
+        if case .installing = updater.phase { return true }
+        return false
+    }
+
+    private var subtitle: String {
+        switch updater.phase {
+        case .installing(let text): return text
+        case .failed(let text): return "Не вийшло: \(text). Спробуй ще раз."
+        default: return "Зараз у тебе \(Updater.current). Оновлення займе кілька секунд, налаштування й історія лишаються."
+        }
+    }
+}
+
+/// A provider retired a model Шепіт relies on: say so instead of failing silently.
+struct GoneModelsBannerView: View {
+    let gone: [String: String]
+
+    var body: some View {
+        if !gone.isEmpty {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(Theme.warning)
+                Text(text)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 9)
+            .background(Theme.warning.opacity(0.12))
+        }
+    }
+
+    private var text: String {
+        let list = gone.sorted { $0.key < $1.key }.map { "\($0.value) · \($0.key)" }.joined(separator: ", ")
+        return "Провайдер більше не приймає модель \(list). Шепіт працює на запасній, але це знак, що потрібне оновлення — перевір «Є оновлення» або напиши в чат."
     }
 }
