@@ -62,6 +62,7 @@ final class Updater: ObservableObject {
         var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(config.repo)/releases/latest")!)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 20
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200,
